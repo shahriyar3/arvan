@@ -49,6 +49,7 @@ const (
 	claimAcquired deliveryClaim = iota
 	claimAlreadyDone
 	claimInProgress
+	claimResume
 )
 
 func NewProcessor(
@@ -156,7 +157,7 @@ func (p *Processor) handleDelivery(ctx context.Context, queue string, delivery a
 		return
 	}
 
-	claim, err := p.claimDelivery(ctx, accountID, messageID)
+	claim, err := p.claimDelivery(ctx, accountID, messageID, delivery.Redelivered)
 	if err != nil {
 		slog.ErrorContext(ctx, "claim delivery failed", "message_id", messageID, "error", err)
 		requeue = true
@@ -172,16 +173,18 @@ func (p *Processor) handleDelivery(ctx context.Context, queue string, delivery a
 	}
 
 	start := time.Now()
-	opCtx, opSpan := observability.StartSpan(ctx, "operator.send",
-		trace.WithAttributes(attribute.String("message_id", payload.MessageID)),
-	)
-	_, err = p.operator.Send(opCtx, operator.SendRequest{
-		MessageID: payload.MessageID,
-		AccountID: payload.AccountID,
-		To:        payload.To,
-		Body:      payload.Body,
-	})
-	opSpan.End()
+	if claim != claimResume {
+		opCtx, opSpan := observability.StartSpan(ctx, "operator.send",
+			trace.WithAttributes(attribute.String("message_id", payload.MessageID)),
+		)
+		_, err = p.operator.Send(opCtx, operator.SendRequest{
+			MessageID: payload.MessageID,
+			AccountID: payload.AccountID,
+			To:        payload.To,
+			Body:      payload.Body,
+		})
+		opSpan.End()
+	}
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -204,9 +207,6 @@ func (p *Processor) handleDelivery(ctx context.Context, queue string, delivery a
 	}
 
 	if err := p.markSent(ctx, accountID, messageID); err != nil {
-		if releaseErr := p.releaseClaim(ctx, messageID); releaseErr != nil {
-			slog.ErrorContext(ctx, "release delivery claim", "message_id", messageID, "error", releaseErr)
-		}
 		slog.ErrorContext(ctx, "mark sms sent failed", "message_id", messageID, "error", err)
 		requeue = true
 		return
@@ -251,7 +251,7 @@ func (p *Processor) deadLetter(ctx context.Context, accountID, messageID uuid.UU
 	return nil
 }
 
-func (p *Processor) claimDelivery(ctx context.Context, accountID, messageID uuid.UUID) (deliveryClaim, error) {
+func (p *Processor) claimDelivery(ctx context.Context, accountID, messageID uuid.UUID, redelivered bool) (deliveryClaim, error) {
 	var claim deliveryClaim
 	err := p.db.Clauses(dbresolver.Write).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		msg, err := p.sms.GetByAccountAndIDTx(ctx, tx, accountID, messageID)
@@ -291,7 +291,11 @@ func (p *Processor) claimDelivery(ctx context.Context, accountID, messageID uuid
 			return nil
 		}
 
-		claim = claimInProgress
+		if redelivered {
+			claim = claimResume
+		} else {
+			claim = claimInProgress
+		}
 		return nil
 	})
 	if err != nil {

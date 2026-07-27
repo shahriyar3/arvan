@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -15,6 +16,8 @@ import (
 type MockServer struct {
 	cfg config.MockOperatorConfig
 	rng *rand.Rand
+	// sent tracks message_id → operator_ref for idempotent retries (at-least-once delivery).
+	sent sync.Map
 }
 
 func NewMockServer(cfg config.MockOperatorConfig) *MockServer {
@@ -49,6 +52,14 @@ func (s *MockServer) handleSend(c *gin.Context) {
 		return
 	}
 
+	if ref, ok := s.sent.Load(req.MessageID); ok {
+		slog.Info("mock operator idempotent replay",
+			"message_id", req.MessageID,
+		)
+		c.JSON(http.StatusOK, mockSendResponse{OperatorRef: ref.(string)})
+		return
+	}
+
 	s.simulateLatency()
 
 	if s.shouldFail() {
@@ -66,9 +77,10 @@ func (s *MockServer) handleSend(c *gin.Context) {
 		"to", req.To,
 	)
 
-	c.JSON(http.StatusOK, mockSendResponse{
-		OperatorRef: uuid.NewString(),
-	})
+	ref := uuid.NewString()
+	s.sent.Store(req.MessageID, ref)
+
+	c.JSON(http.StatusOK, mockSendResponse{OperatorRef: ref})
 }
 
 func (s *MockServer) simulateLatency() {

@@ -147,7 +147,7 @@ func TestClaimDeliveryAcquiresBeforeOperator(t *testing.T) {
 		config.WorkerConfig{},
 	)
 
-	claim, err := processor.claimDelivery(context.Background(), accountID, messageID)
+	claim, err := processor.claimDelivery(context.Background(), accountID, messageID, false)
 	require.NoError(t, err)
 	assert.Equal(t, claimAcquired, claim)
 
@@ -183,7 +183,7 @@ func TestClaimDeliveryAlreadySent(t *testing.T) {
 		config.WorkerConfig{},
 	)
 
-	claim, err := processor.claimDelivery(context.Background(), accountID, messageID)
+	claim, err := processor.claimDelivery(context.Background(), accountID, messageID, false)
 	require.NoError(t, err)
 	assert.Equal(t, claimAlreadyDone, claim)
 }
@@ -219,9 +219,76 @@ func TestClaimDeliveryInProgressWhenAlreadyClaimed(t *testing.T) {
 		config.WorkerConfig{},
 	)
 
-	claim, err := processor.claimDelivery(context.Background(), accountID, messageID)
+	claim, err := processor.claimDelivery(context.Background(), accountID, messageID, false)
 	require.NoError(t, err)
 	assert.Equal(t, claimInProgress, claim)
+}
+
+func TestClaimDeliveryResumeWhenRedelivered(t *testing.T) {
+	db := repository.NewTestDB(t)
+	accountID := uuid.New()
+	messageID := uuid.New()
+
+	repository.SeedTestAccount(t, db, accountID)
+
+	smsRepo := repository.NewSMSRepository(db)
+	require.NoError(t, smsRepo.Create(context.Background(), nil, domain.SMSMessage{
+		ID:          messageID,
+		AccountID:   accountID,
+		ToNumber:    "+989121234567",
+		Body:        "Hello",
+		Encoding:    domain.EncodingGSM7,
+		MessageType: domain.MessageTypeStandard,
+		Status:      domain.SMSStatusAccepted,
+		Cost:        domain.SMSCostPerMessage,
+	}))
+
+	processedRepo := repository.NewProcessedConsumerRepository(db)
+	_, err := processedRepo.MarkProcessedIfNew(context.Background(), nil, messageID)
+	require.NoError(t, err)
+
+	processor := NewProcessor(
+		db,
+		smsRepo,
+		processedRepo,
+		&fakeOperator{},
+		config.WorkerConfig{},
+	)
+
+	claim, err := processor.claimDelivery(context.Background(), accountID, messageID, true)
+	require.NoError(t, err)
+	assert.Equal(t, claimResume, claim)
+}
+
+func TestHandleDeliveryResumeSkipsOperator(t *testing.T) {
+	op := &fakeOperator{}
+	processor, accountID, messageID := newProcessorTestHarness(t, op)
+
+	_, err := processor.processed.MarkProcessedIfNew(context.Background(), nil, messageID)
+	require.NoError(t, err)
+
+	ack := &stubAcknowledger{}
+	body, err := json.Marshal(domain.SMSSendPayload{
+		MessageID:   messageID.String(),
+		AccountID:   accountID.String(),
+		To:          "+989121234567",
+		Body:        "Hello",
+		MessageType: domain.MessageTypeStandard,
+	})
+	require.NoError(t, err)
+
+	processor.handleDelivery(context.Background(), broker.QueueStandard, amqp.Delivery{
+		Body:         body,
+		Acknowledger: ack,
+		Redelivered:  true,
+	})
+
+	assert.Equal(t, 1, ack.acked)
+	assert.Equal(t, 0, op.callCount())
+
+	msg, err := processor.sms.GetByAccountAndID(context.Background(), accountID, messageID)
+	require.NoError(t, err)
+	assert.Equal(t, domain.SMSStatusSent, msg.Status)
 }
 
 func TestHandleDeliverySuccessMarksSent(t *testing.T) {

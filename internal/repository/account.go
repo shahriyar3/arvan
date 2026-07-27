@@ -60,7 +60,8 @@ func (r *AccountRepository) UpsertByTokenHash(ctx context.Context, tokenHash str
 
 func (r *AccountRepository) GetBalance(ctx context.Context, accountID uuid.UUID) (int64, error) {
 	var model accountModel
-	err := readDB(r.db).WithContext(ctx).
+	// Read from primary so balance reflects recent sends/topups (replica lag would stale-read).
+	err := writeDB(r.db).WithContext(ctx).
 		Select("balance").
 		Where("id = ?", accountID).
 		First(&model).Error
