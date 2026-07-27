@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -54,11 +55,16 @@ func TestSMSServiceSendIdempotencyConcurrency(t *testing.T) {
 	}
 
 	var successCount int
+	var inProgressCount int
 	var firstMessageID uuid.UUID
 	for i := 0; i < workers; i++ {
 		select {
 		case err := <-errs:
-			t.Logf("worker error: %v", err)
+			if errors.Is(err, domainerrors.ErrIdempotencyInProgress) {
+				inProgressCount++
+				continue
+			}
+			require.Failf(t, "unexpected worker error", "%v", err)
 		case result := <-results:
 			successCount++
 			if firstMessageID == uuid.Nil {
@@ -68,8 +74,9 @@ func TestSMSServiceSendIdempotencyConcurrency(t *testing.T) {
 			}
 		}
 	}
-	require.GreaterOrEqual(t, successCount, 1)
+	require.GreaterOrEqual(t, successCount, 1, "expected at least one successful send")
 	require.NotEqual(t, uuid.Nil, firstMessageID)
+	t.Logf("success=%d in_progress=%d", successCount, inProgressCount)
 
 	balance, err := accountRepo.GetBalance(ctx, account.ID)
 	require.NoError(t, err)
@@ -140,4 +147,50 @@ func TestSMSServiceSendConcurrency(t *testing.T) {
 		MessageType: domain.MessageTypeStandard,
 	})
 	assert.ErrorIs(t, err, domainerrors.ErrInsufficientBalance)
+}
+
+func TestSMSServiceSendExactSpendLimit(t *testing.T) {
+	db := repository.NewIntegrationDB(t)
+	accountRepo := repository.NewAccountRepository(db)
+	ledgerRepo := repository.NewLedgerRepository(db)
+	smsRepo := repository.NewSMSRepository(db)
+	outboxRepo := repository.NewOutboxRepository(db)
+	idempotencyRepo := repository.NewIdempotencyRepository(db)
+	svc := NewSMSService(accountRepo, ledgerRepo, smsRepo, outboxRepo, idempotencyRepo)
+	ctx := context.Background()
+
+	account, err := accountRepo.UpsertByTokenHash(ctx, "sms-exact-spend-hash")
+	require.NoError(t, err)
+
+	accountSvc := NewAccountService(accountRepo, ledgerRepo)
+	_, err = accountSvc.Topup(ctx, account.ID, 3)
+	require.NoError(t, err)
+
+	for i := 0; i < 3; i++ {
+		_, err := svc.Send(ctx, account.ID, domain.SendSMSInput{
+			To:          "+989121234567",
+			Body:        "Hello",
+			MessageType: domain.MessageTypeStandard,
+		})
+		require.NoError(t, err, "send %d should succeed", i+1)
+	}
+
+	balance, err := accountRepo.GetBalance(ctx, account.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), balance)
+
+	_, err = svc.Send(ctx, account.ID, domain.SendSMSInput{
+		To:          "+989121234567",
+		Body:        "One more",
+		MessageType: domain.MessageTypeStandard,
+	})
+	assert.ErrorIs(t, err, domainerrors.ErrInsufficientBalance)
+
+	balance, err = accountRepo.GetBalance(ctx, account.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), balance)
+
+	var smsCount int64
+	require.NoError(t, db.Table("sms_messages").Where("account_id = ?", account.ID).Count(&smsCount).Error)
+	assert.Equal(t, int64(3), smsCount)
 }

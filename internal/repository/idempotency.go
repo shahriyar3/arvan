@@ -61,7 +61,10 @@ func (r *IdempotencyRepository) FindByAccountAndKeyTx(
 	return &record, nil
 }
 
+const idempotencyClaimSavepoint = "idempotency_claim"
+
 // ClaimOrGet inserts a placeholder row for the idempotency key or returns an existing record on conflict.
+// Uses a savepoint so a unique-violation on PostgreSQL does not abort the outer transaction.
 func (r *IdempotencyRepository) ClaimOrGet(
 	ctx context.Context,
 	tx *gorm.DB,
@@ -75,8 +78,15 @@ func (r *IdempotencyRepository) ClaimOrGet(
 		ResponseSnapshot: []byte("{}"),
 	}
 
+	if err := tx.SavePoint(idempotencyClaimSavepoint).Error; err != nil {
+		return nil, false, fmt.Errorf("idempotency savepoint: %w", err)
+	}
+
 	if err := tx.WithContext(ctx).Create(&model).Error; err != nil {
 		if isUniqueViolation(err) {
+			if err := tx.RollbackTo(idempotencyClaimSavepoint).Error; err != nil {
+				return nil, false, fmt.Errorf("idempotency rollback savepoint: %w", err)
+			}
 			existing, findErr := r.FindByAccountAndKeyTx(ctx, tx, accountID, key)
 			if findErr != nil {
 				return nil, false, findErr

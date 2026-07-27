@@ -38,7 +38,7 @@ test-integration-setup:
 	$(MIGRATE) -path migrations -database "$(TEST_DATABASE_URL)" up
 
 test-integration: test-integration-setup
-	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" $(GO) test -race -tags=integration ./internal/service/ ./internal/handler/
+	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" $(GO) test -race -p 1 -tags=integration ./internal/service/ ./internal/handler/
 
 lint:
 	@command -v golangci-lint >/dev/null 2>&1 && golangci-lint run ./... || $(GO) vet ./...

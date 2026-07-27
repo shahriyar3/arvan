@@ -120,6 +120,7 @@ func (r *AccountRepository) LockAccountForUpdate(
 	return model.Balance, nil
 }
 
+// DeductLockedBalance subtracts cost from an account row already locked via LockAccountForUpdate in the same tx.
 func (r *AccountRepository) DeductLockedBalance(
 	ctx context.Context,
 	tx *gorm.DB,
