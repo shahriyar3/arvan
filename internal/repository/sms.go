@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/shahriyar/arvan/internal/domain"
@@ -45,8 +46,20 @@ func (r *SMSRepository) Create(ctx context.Context, tx *gorm.DB, msg domain.SMSM
 }
 
 func (r *SMSRepository) GetByAccountAndID(ctx context.Context, accountID, messageID uuid.UUID) (*domain.SMSMessage, error) {
+	return r.getByAccountAndID(ctx, readDB(r.db), accountID, messageID)
+}
+
+func (r *SMSRepository) GetByAccountAndIDTx(ctx context.Context, tx *gorm.DB, accountID, messageID uuid.UUID) (*domain.SMSMessage, error) {
+	db := tx
+	if db == nil {
+		db = writeDB(r.db)
+	}
+	return r.getByAccountAndID(ctx, db, accountID, messageID)
+}
+
+func (r *SMSRepository) getByAccountAndID(ctx context.Context, db *gorm.DB, accountID, messageID uuid.UUID) (*domain.SMSMessage, error) {
 	var model smsMessageModel
-	err := readDB(r.db).WithContext(ctx).
+	err := db.WithContext(ctx).
 		Where("id = ? AND account_id = ?", messageID, accountID).
 		First(&model).Error
 	if err != nil {
@@ -105,4 +118,40 @@ func (r *SMSRepository) ListByAccount(
 	}
 
 	return messages, nil
+}
+
+func (r *SMSRepository) MarkSentIfAccepted(ctx context.Context, tx *gorm.DB, accountID, messageID uuid.UUID) (bool, error) {
+	now := time.Now().UTC()
+	db := tx
+	if db == nil {
+		db = writeDB(r.db)
+	}
+
+	result := db.WithContext(ctx).
+		Model(&smsMessageModel{}).
+		Where("id = ? AND account_id = ? AND status = ?", messageID, accountID, domain.SMSStatusAccepted).
+		Updates(map[string]any{
+			"status":  domain.SMSStatusSent,
+			"sent_at": now,
+		})
+	if result.Error != nil {
+		return false, fmt.Errorf("mark sms sent: %w", result.Error)
+	}
+	return result.RowsAffected > 0, nil
+}
+
+func (r *SMSRepository) MarkFailedIfAccepted(ctx context.Context, tx *gorm.DB, accountID, messageID uuid.UUID) (bool, error) {
+	db := tx
+	if db == nil {
+		db = writeDB(r.db)
+	}
+
+	result := db.WithContext(ctx).
+		Model(&smsMessageModel{}).
+		Where("id = ? AND account_id = ? AND status = ?", messageID, accountID, domain.SMSStatusAccepted).
+		Update("status", domain.SMSStatusFailed)
+	if result.Error != nil {
+		return false, fmt.Errorf("mark sms failed: %w", result.Error)
+	}
+	return result.RowsAffected > 0, nil
 }

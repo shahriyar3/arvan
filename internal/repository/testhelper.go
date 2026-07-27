@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -37,7 +38,14 @@ func newTestDB(t *testing.T) *gorm.DB {
 	}))
 	require.NoError(t, err)
 
-	err = db.AutoMigrate(&accountModel{}, &ledgerModel{}, &smsMessageModel{}, &outboxEventModel{}, &idempotencyKeyModel{})
+	err = db.AutoMigrate(
+		&accountModel{},
+		&ledgerModel{},
+		&smsMessageModel{},
+		&outboxEventModel{},
+		&idempotencyKeyModel{},
+		&processedConsumerEventModel{},
+	)
 	require.NoError(t, err)
 
 	return db
@@ -47,4 +55,13 @@ func newTestDB(t *testing.T) *gorm.DB {
 func UsesSQLite(db *gorm.DB) bool {
 	_, ok := db.Dialector.(*sqlite.Dialector)
 	return ok
+}
+
+// SeedTestAccount inserts a minimal account row for cross-package tests.
+func SeedTestAccount(t *testing.T, db *gorm.DB, accountID uuid.UUID) {
+	t.Helper()
+	require.NoError(t, writeDB(db).Create(&accountModel{
+		ID:        accountID,
+		TokenHash: accountID.String(),
+	}).Error)
 }

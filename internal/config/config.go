@@ -9,11 +9,15 @@ import (
 )
 
 type Config struct {
-	App      AppConfig      `mapstructure:"app"`
-	HTTP     HTTPConfig     `mapstructure:"http"`
-	Database DatabaseConfig `mapstructure:"database"`
-	Redis    RedisConfig    `mapstructure:"redis"`
-	RabbitMQ RabbitMQConfig `mapstructure:"rabbitmq"`
+	App         AppConfig         `mapstructure:"app"`
+	HTTP        HTTPConfig        `mapstructure:"http"`
+	Database    DatabaseConfig    `mapstructure:"database"`
+	Redis       RedisConfig       `mapstructure:"redis"`
+	RabbitMQ    RabbitMQConfig    `mapstructure:"rabbitmq"`
+	OutboxRelay OutboxRelayConfig `mapstructure:"outbox_relay"`
+	Worker      WorkerConfig      `mapstructure:"worker"`
+	Operator    OperatorConfig    `mapstructure:"operator"`
+	MockOp      MockOperatorConfig `mapstructure:"mock_operator"`
 }
 
 type AppConfig struct {
@@ -43,6 +47,37 @@ type RedisConfig struct {
 
 type RabbitMQConfig struct {
 	URL string `mapstructure:"url"`
+}
+
+type OutboxRelayConfig struct {
+	PollInterval    time.Duration `mapstructure:"poll_interval"`
+	BatchSize       int           `mapstructure:"batch_size"`
+	LockDuration    time.Duration `mapstructure:"lock_duration"`
+	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout"`
+}
+
+type WorkerConfig struct {
+	PrefetchCount   int           `mapstructure:"prefetch_count"`
+	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout"`
+}
+
+type OperatorConfig struct {
+	BaseURL string        `mapstructure:"base_url"`
+	Timeout time.Duration `mapstructure:"timeout"`
+}
+
+type MockOperatorConfig struct {
+	Host         string        `mapstructure:"host"`
+	Port         int           `mapstructure:"port"`
+	MinLatency   time.Duration `mapstructure:"min_latency"`
+	MaxLatency   time.Duration `mapstructure:"max_latency"`
+	FailureRate  float64       `mapstructure:"failure_rate"`
+	ReadTimeout  time.Duration `mapstructure:"read_timeout"`
+	WriteTimeout time.Duration `mapstructure:"write_timeout"`
+}
+
+func (c MockOperatorConfig) Addr() string {
+	return fmt.Sprintf("%s:%d", c.Host, c.Port)
 }
 
 func Load() (*Config, error) {
@@ -90,6 +125,21 @@ func bindEnv(v *viper.Viper) {
 		"redis.password",
 		"redis.db",
 		"rabbitmq.url",
+		"outbox_relay.poll_interval",
+		"outbox_relay.batch_size",
+		"outbox_relay.lock_duration",
+		"outbox_relay.shutdown_timeout",
+		"worker.prefetch_count",
+		"worker.shutdown_timeout",
+		"operator.base_url",
+		"operator.timeout",
+		"mock_operator.host",
+		"mock_operator.port",
+		"mock_operator.min_latency",
+		"mock_operator.max_latency",
+		"mock_operator.failure_rate",
+		"mock_operator.read_timeout",
+		"mock_operator.write_timeout",
 	}
 	for _, key := range keys {
 		_ = v.BindEnv(key)
@@ -115,6 +165,25 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("redis.db", 0)
 
 	v.SetDefault("rabbitmq.url", "amqp://sms:sms@localhost:5672/")
+
+	v.SetDefault("outbox_relay.poll_interval", "500ms")
+	v.SetDefault("outbox_relay.batch_size", 50)
+	v.SetDefault("outbox_relay.lock_duration", "30s")
+	v.SetDefault("outbox_relay.shutdown_timeout", "15s")
+
+	v.SetDefault("worker.prefetch_count", 10)
+	v.SetDefault("worker.shutdown_timeout", "30s")
+
+	v.SetDefault("operator.base_url", "http://localhost:8090")
+	v.SetDefault("operator.timeout", "10s")
+
+	v.SetDefault("mock_operator.host", "0.0.0.0")
+	v.SetDefault("mock_operator.port", 8090)
+	v.SetDefault("mock_operator.min_latency", "10ms")
+	v.SetDefault("mock_operator.max_latency", "50ms")
+	v.SetDefault("mock_operator.failure_rate", 0.0)
+	v.SetDefault("mock_operator.read_timeout", "5s")
+	v.SetDefault("mock_operator.write_timeout", "5s")
 }
 
 func (c HTTPConfig) Addr() string {

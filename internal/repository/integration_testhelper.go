@@ -73,6 +73,7 @@ func truncateIntegrationTables(t *testing.T, db *gorm.DB) {
 	const query = `
 		TRUNCATE TABLE
 			idempotency_keys,
+			processed_consumer_events,
 			outbox_events,
 			sms_messages,
 			account_ledger,

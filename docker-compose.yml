@@ -40,5 +40,24 @@ services:
       timeout: 5s
       retries: 10
 
+  mock-operator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: mock-operator
+    environment:
+      MOCK_OPERATOR_HOST: 0.0.0.0
+      MOCK_OPERATOR_PORT: 8090
+      MOCK_OPERATOR_MIN_LATENCY: 10ms
+      MOCK_OPERATOR_MAX_LATENCY: 50ms
+      MOCK_OPERATOR_FAILURE_RATE: 0
+    ports:
+      - "8090:8090"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8090/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
 volumes:
   pgdata:

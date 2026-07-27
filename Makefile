@@ -1,4 +1,4 @@
-.PHONY: help build run-api run-worker run-relay run-seed test test-race test-integration lint check migrate-up migrate-down seed tidy
+.PHONY: help build run-api run-worker run-relay run-mock-operator run-seed test test-race test-integration lint check migrate-up migrate-down seed tidy
 
 GO ?= go
 MIGRATE ?= $(shell command -v migrate 2>/dev/null || echo $(HOME)/go/bin/migrate)
@@ -12,6 +12,7 @@ build:
 	$(GO) build -o bin/api ./cmd/api
 	$(GO) build -o bin/worker ./cmd/worker
 	$(GO) build -o bin/outbox-relay ./cmd/outbox-relay
+	$(GO) build -o bin/mock-operator ./cmd/mock-operator
 	$(GO) build -o bin/seed ./cmd/seed
 
 run-api:
@@ -22,6 +23,9 @@ run-worker:
 
 run-relay:
 	$(GO) run ./cmd/outbox-relay
+
+run-mock-operator:
+	$(GO) run ./cmd/mock-operator
 
 seed:
 	$(GO) run ./cmd/seed
@@ -38,7 +42,7 @@ test-integration-setup:
 	$(MIGRATE) -path migrations -database "$(TEST_DATABASE_URL)" up
 
 test-integration: test-integration-setup
-	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" $(GO) test -race -p 1 -tags=integration ./internal/service/ ./internal/handler/
+	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" $(GO) test -race -p 1 -tags=integration ./internal/service/ ./internal/handler/ ./internal/repository/ ./internal/worker/
 
 lint:
 	@command -v golangci-lint >/dev/null 2>&1 && golangci-lint run ./... || $(GO) vet ./...

@@ -16,6 +16,8 @@ const (
 	EncodingUCS2  = "ucs2"
 
 	SMSStatusAccepted = "accepted"
+	SMSStatusSent     = "sent"
+	SMSStatusFailed   = "failed"
 
 	OutboxEventTypeSMSSendRequested = "sms.send_requested"
 	OutboxStatusPending             = "pending"

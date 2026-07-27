@@ -10,7 +10,7 @@ Key patterns: fire-and-forget acceptance, transactional outbox, idempotent API a
 
 ## Architecture
 
-Phase 1 delivers the foundation: three Go binaries (`api`, `worker`, `outbox-relay`), PostgreSQL schema, Redis, and RabbitMQ via docker-compose. Phase 2 adds account identification, prepaid balance, and ledger audit trail. Phase 3 adds fire-and-forget send with transactional outbox and idempotent retries. Full async pipeline (relay + worker), observability, and HAProxy are added in later phases.
+Phase 1 delivers the foundation: three Go binaries (`api`, `worker`, `outbox-relay`), PostgreSQL schema, Redis, and RabbitMQ via docker-compose. Phase 2 adds account identification, prepaid balance, and ledger audit trail. Phase 3 adds fire-and-forget send with transactional outbox and idempotent retries. Phase 4 wires the async pipeline: outbox relay, RabbitMQ, mock operator, and worker status updates. Observability and HAProxy are added in later phases.
 
 ```mermaid
 flowchart LR
@@ -73,9 +73,9 @@ COMMIT;
 
 **Validation:** E.164 phone (`+989...`), single-page body (GSM-7 ≤160 chars, UCS-2 ≤70 for Persian/Unicode), `message_type` = `standard` | `express`. Cost = 1 unit per message (same price for EN/FA).
 
-**Idempotency:** optional header `Idempotency-Key: <UUID>`. Unique `(account_id, idempotency_key)`. Middleware fast-path returns stored `202` response; duplicate in-flight requests get `409 Conflict` instead of a second deduct. Relay/worker dedup is Phase 4.
+**Idempotency:** optional header `Idempotency-Key: <UUID>`. Unique `(account_id, idempotency_key)`. Middleware fast-path returns stored `202` response; duplicate in-flight requests get `409 Conflict` instead of a second deduct. Worker dedup via `processed_consumer_events` (Phase 4).
 
-**Outbox:** rows stay `pending` until `outbox-relay` publishes to RabbitMQ (Phase 4). No RabbitMQ publish before TX commit.
+**Outbox:** relay publishes pending rows to RabbitMQ with publisher confirms; worker completes delivery (Phase 4). No RabbitMQ publish before TX commit.
 
 Example:
 
@@ -94,6 +94,52 @@ curl -X POST http://localhost:8080/v1/sms/send \
 ```
 
 **Errors:** `402` insufficient balance, `409` idempotency in progress (retry later), `400` validation (phone, body length, message type).
+
+## Async Pipeline (Phase 4)
+
+After Phase 3 commits a send, delivery continues asynchronously:
+
+```text
+API TX (deduct + sms_messages + outbox pending)
+  → outbox-relay (FOR UPDATE SKIP LOCKED)
+  → RabbitMQ queue by message_type (sms.express | sms.standard)
+  → worker (dedup + HTTP mock operator)
+  → sms_messages.status = sent
+```
+
+| Binary | Role |
+|---|---|
+| `outbox-relay` | Polls `outbox_events`, publishes with publisher confirms, marks `published` |
+| `worker` | Consumes both queues, calls mock operator, updates status |
+| `mock-operator` | Configurable latency/failure HTTP stand-in for telco operator |
+
+**Relay:** `SELECT ... WHERE status='pending' FOR UPDATE SKIP LOCKED`, set `locked_until`, publish JSON payload, then `UPDATE status='published'`. On publish failure: increment `retry_count`, release lock — no RabbitMQ publish before TX commit (write path unchanged from Phase 3).
+
+**Worker dedup:** `processed_consumer_events(message_id)` claim with `ON CONFLICT DO NOTHING` **before** operator call; transient failures release the claim for retry; permanent operator errors mark `failed` and ack. Duplicate deliveries are acked without double operator calls.
+
+**Graceful shutdown:** relay and worker stop polling/consuming on SIGTERM, wait for in-flight work up to configured timeout.
+
+Example end-to-end:
+
+```bash
+docker compose up -d
+make migrate-up && make seed
+
+# four terminals (or compose services in production)
+make run-api
+make run-mock-operator
+make run-relay
+make run-worker
+
+curl -X POST http://localhost:8080/v1/sms/send \
+  -H "X-Account-Token: demo-token-account-a" \
+  -H "Content-Type: application/json" \
+  -d '{"to":"+989121234567","body":"Hello","message_type":"standard"}'
+
+# Poll until status becomes sent
+curl http://localhost:8080/v1/sms/{message_id} \
+  -H "X-Account-Token: demo-token-account-a"
+```
 
 ## Scale Considerations
 
@@ -133,6 +179,7 @@ Infrastructure (docker-compose):
 | PostgreSQL | 5433 |
 | Redis      | 6379 |
 | RabbitMQ   | 5672 (AMQP), 15672 (management UI) |
+| Mock Operator | 8090 |
 
 ## API Documentation
 

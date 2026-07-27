@@ -38,14 +38,6 @@ func NewSMSService(
 	}
 }
 
-type outboxPayload struct {
-	MessageID   string `json:"message_id"`
-	AccountID   string `json:"account_id"`
-	To          string `json:"to"`
-	Body        string `json:"body"`
-	MessageType string `json:"message_type"`
-}
-
 func (s *SMSService) Send(ctx context.Context, accountID uuid.UUID, input domain.SendSMSInput) (domain.SendSMSResult, error) {
 	encoding, err := validateSendInput(input)
 	if err != nil {
@@ -120,7 +112,7 @@ func (s *SMSService) Send(ctx context.Context, accountID uuid.UUID, input domain
 			return err
 		}
 
-		payload, err := json.Marshal(outboxPayload{
+		payload, err := json.Marshal(domain.SMSSendPayload{
 			MessageID:   messageID.String(),
 			AccountID:   accountID.String(),
 			To:          input.To,
