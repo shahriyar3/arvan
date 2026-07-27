@@ -4,12 +4,15 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
-type HealthHandler struct{}
+type HealthHandler struct {
+	db *gorm.DB
+}
 
-func NewHealthHandler() *HealthHandler {
-	return &HealthHandler{}
+func NewHealthHandler(db *gorm.DB) *HealthHandler {
+	return &HealthHandler{db: db}
 }
 
 func (h *HealthHandler) Register(r gin.IRouter) {
@@ -22,5 +25,21 @@ func (h *HealthHandler) Live(c *gin.Context) {
 }
 
 func (h *HealthHandler) Ready(c *gin.Context) {
+	if h.db == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "database unavailable"})
+		return
+	}
+
+	sqlDB, err := h.db.DB()
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "database unavailable"})
+		return
+	}
+
+	if err := sqlDB.PingContext(c.Request.Context()); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "database unavailable"})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{"status": "ready"})
 }

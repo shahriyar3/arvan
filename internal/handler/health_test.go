@@ -13,20 +13,16 @@ func TestHealthEndpoints(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	router := gin.New()
-	NewHealthHandler().Register(router)
+	NewHealthHandler(nil).Register(router)
 
-	for _, tc := range []struct {
-		path     string
-		contains string
-	}{
-		{"/health/live", "ok"},
-		{"/health/ready", "ready"},
-	} {
-		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
-		rec := httptest.NewRecorder()
-		router.ServeHTTP(rec, req)
+	req := httptest.NewRequest(http.MethodGet, "/health/live", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Contains(t, rec.Body.String(), "ok")
 
-		require.Equal(t, http.StatusOK, rec.Code)
-		require.Contains(t, rec.Body.String(), tc.contains)
-	}
+	req = httptest.NewRequest(http.MethodGet, "/health/ready", nil)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 }

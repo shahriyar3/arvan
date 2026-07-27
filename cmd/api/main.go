@@ -12,7 +12,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/shahriyar/arvan/internal/config"
 	"github.com/shahriyar/arvan/internal/handler"
+	"github.com/shahriyar/arvan/internal/middleware"
 	"github.com/shahriyar/arvan/internal/observability"
+	"github.com/shahriyar/arvan/internal/repository"
+	"github.com/shahriyar/arvan/internal/service"
 )
 
 func main() {
@@ -25,6 +28,16 @@ func main() {
 	logger := observability.NewLogger(cfg.App.LogLevel)
 	slog.SetDefault(logger)
 
+	db, err := repository.NewDB(cfg.Database)
+	if err != nil {
+		logger.Error("failed to connect database", "error", err)
+		os.Exit(1)
+	}
+
+	accountRepo := repository.NewAccountRepository(db)
+	ledgerRepo := repository.NewLedgerRepository(db)
+	accountService := service.NewAccountService(accountRepo, ledgerRepo)
+
 	if cfg.App.Environment == "production" {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -32,7 +45,11 @@ func main() {
 	router := gin.New()
 	router.Use(gin.Recovery())
 
-	handler.NewHealthHandler().Register(router)
+	handler.NewHealthHandler(db).Register(router)
+
+	v1 := router.Group("/v1")
+	v1.Use(middleware.AccountToken(accountRepo))
+	handler.NewAccountHandler(accountService).Register(v1)
 
 	server := &http.Server{
 		Addr:         cfg.HTTP.Addr(),
