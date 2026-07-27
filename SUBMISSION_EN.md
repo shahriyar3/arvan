@@ -10,11 +10,12 @@ Key patterns: fire-and-forget acceptance, transactional outbox, idempotent API a
 
 ## Architecture
 
-Phase 1 delivers the foundation: three Go binaries (`api`, `worker`, `outbox-relay`), PostgreSQL schema, Redis, and RabbitMQ via docker-compose. Phase 2 adds account identification, prepaid balance, and ledger audit trail. Phase 3 adds fire-and-forget send with transactional outbox and idempotent retries. Phase 4 wires the async pipeline: outbox relay, RabbitMQ, mock operator, and worker status updates. Observability and HAProxy are added in later phases.
+Phase 1 delivers the foundation: three Go binaries (`api`, `worker`, `outbox-relay`), PostgreSQL schema, Redis, and RabbitMQ via docker-compose. Phase 2 adds account identification, prepaid balance, and ledger audit trail. Phase 3 adds fire-and-forget send with transactional outbox and idempotent retries. Phase 4 wires the async pipeline: outbox relay, RabbitMQ, mock operator, and worker status updates. Phase 5 adds resilience: Redis rate limiting, express/standard bulkhead pools, circuit breaker, DLQ, HAProxy, and express SLA metrics. Observability endpoints expand in Phase 6.
 
 ```mermaid
 flowchart LR
-    Client --> API
+    Client --> HAProxy
+    HAProxy --> API
     API --> PGPrimary[(PostgreSQL)]
     API --> PGReplica[(Read Replica)]
     API --> Redis
@@ -141,9 +142,45 @@ curl http://localhost:8080/v1/sms/{message_id} \
   -H "X-Account-Token: demo-token-account-a"
 ```
 
+## Resilience & Scale (Phase 5)
+
+| Component | Behavior |
+|---|---|
+| Rate limit | Redis sliding window per `account_id` (default 100 req/s) → `429` + `Retry-After` |
+| Bulkhead | Separate semaphores for `sms.express` (20) and `sms.standard` (50) worker pools |
+| Circuit breaker | `gobreaker` on operator HTTP — open state requeues messages (no sync blocking) |
+| DLQ | After max delivery attempts → `sms.dlq` queue + `dead_lettered` status |
+| HAProxy | L7 round-robin across 2 API replicas with `/health/ready` checks |
+| Express SLA | Histogram `express_operator_delivery_seconds` on worker `:9091/metrics` |
+
+**Rate limiting** runs after token resolution on all `/v1/*` routes. Key pattern: `ratelimit:{account_id}`.
+
+**Bulkhead** ensures express OTP traffic keeps dedicated concurrency even when the standard queue is flooded.
+
+**Circuit breaker** opens after consecutive operator failures; workers nack/requeue while CB is open so messages stay durable in RabbitMQ.
+
+**DLQ path:** worker sums RabbitMQ `x-death` rejection counts (with numeric type coercion); when attempts ≥ `WORKER_MAX_DELIVERY_ATTEMPTS` (default 5), DB status becomes `dead_lettered` first, then payload is copied to `sms.dlq` (retry-safe if publish fails). If `x-death` is absent, `redelivered=true` counts as one prior attempt.
+
+Example HAProxy entrypoint:
+
+```bash
+docker compose up -d
+make migrate-up && make seed
+# API available via HAProxy on :8080
+curl http://localhost:8080/v1/account/balance \
+  -H "X-Account-Token: demo-token-account-a"
+```
+
+Worker metrics:
+
+```bash
+curl http://localhost:9091/metrics | grep express_operator_delivery_seconds
+curl http://localhost:9091/metrics | grep circuit_breaker_state
+```
+
 ## Scale Considerations
 
-Target: ~1.2K msg/s average, 12–25K msg/s peak. API returns quickly; workers scale horizontally. Rate limiting and bulkhead pools are added in Phase 5.
+Target: ~1.2K msg/s average, 12–25K msg/s peak. API returns quickly; workers scale horizontally. HAProxy load-balances API replicas; rate limiting and bulkhead pools protect tenants and express SLA.
 
 ## How to Run
 
@@ -176,10 +213,12 @@ Infrastructure (docker-compose):
 
 | Service   | Port  |
 |-----------|-------|
+| HAProxy (API) | 8080 |
 | PostgreSQL | 5433 |
 | Redis      | 6379 |
 | RabbitMQ   | 5672 (AMQP), 15672 (management UI) |
 | Mock Operator | 8090 |
+| Worker metrics | 9091 |
 
 ## API Documentation
 
@@ -194,6 +233,6 @@ make test
 
 ## Trade-offs
 
-- **Single-node PostgreSQL/Redis** in Phase 1–2 for fast local dev; replication and HAProxy added later. When `DATABASE_REPLICA_DSN` is empty, reads use primary.
+- **Single-node PostgreSQL/Redis** in local dev; HAProxy load-balances two API replicas (Phase 5). When `DATABASE_REPLICA_DSN` is empty, reads use primary.
 - **Topup endpoint open** for demo — no separate admin auth system per challenge scope.
 - **Local docs** (`.local/`) stay out of Git; only this file and `README.md` are submitted as documentation.

@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/google/uuid"
 	"github.com/shahriyar/arvan/internal/config"
 	"github.com/shahriyar/arvan/internal/domain"
 	domainerrors "github.com/shahriyar/arvan/internal/domain/errors"
+	"github.com/shahriyar/arvan/internal/observability"
 	"github.com/shahriyar/arvan/internal/operator"
 	"github.com/shahriyar/arvan/internal/repository"
 	"gorm.io/gorm"
@@ -23,12 +25,18 @@ type Consumer interface {
 	Consume(queue string, prefetch int) (<-chan amqp.Delivery, error)
 }
 
+type DLQPublisher interface {
+	PublishToDLQ(ctx context.Context, body []byte) error
+}
+
 type Processor struct {
 	db        *gorm.DB
 	sms       *repository.SMSRepository
 	processed *repository.ProcessedConsumerRepository
 	operator  operator.SMSOperator
 	cfg       config.WorkerConfig
+	bulkhead  *Bulkhead
+	dlq       DLQPublisher
 	inFlight  sync.WaitGroup
 }
 
@@ -53,7 +61,12 @@ func NewProcessor(
 		processed: processed,
 		operator:  op,
 		cfg:       cfg,
+		bulkhead:  NewBulkhead(cfg.ExpressPoolSize, cfg.StandardPoolSize),
 	}
+}
+
+func (p *Processor) SetDLQPublisher(publisher DLQPublisher) {
+	p.dlq = publisher
 }
 
 func (p *Processor) RunConsumer(ctx context.Context, consumer Consumer, queue string) error {
@@ -71,10 +84,17 @@ func (p *Processor) RunConsumer(ctx context.Context, consumer Consumer, queue st
 				return nil
 			}
 			p.inFlight.Add(1)
-			go func(d amqp.Delivery) {
+			go func(d amqp.Delivery, q string) {
 				defer p.inFlight.Done()
-				p.handleDelivery(ctx, d)
-			}(delivery)
+				if err := p.bulkhead.Acquire(ctx, q); err != nil {
+					if nackErr := d.Nack(false, true); nackErr != nil {
+						slog.Error("nack delivery on bulkhead acquire cancel", "error", nackErr)
+					}
+					return
+				}
+				defer p.bulkhead.Release(q)
+				p.handleDelivery(ctx, q, d)
+			}(delivery, queue)
 		}
 	}
 }
@@ -83,7 +103,7 @@ func (p *Processor) Wait() {
 	p.inFlight.Wait()
 }
 
-func (p *Processor) handleDelivery(ctx context.Context, delivery amqp.Delivery) {
+func (p *Processor) handleDelivery(ctx context.Context, queue string, delivery amqp.Delivery) {
 	requeue := false
 	defer func() {
 		if requeue {
@@ -114,6 +134,14 @@ func (p *Processor) handleDelivery(ctx context.Context, delivery amqp.Delivery) 
 		return
 	}
 
+	if p.shouldDeadLetter(delivery) {
+		if err := p.deadLetter(ctx, accountID, messageID, delivery.Body); err != nil {
+			slog.Error("dead letter delivery failed", "message_id", messageID, "error", err)
+			requeue = true
+		}
+		return
+	}
+
 	claim, err := p.claimDelivery(ctx, accountID, messageID)
 	if err != nil {
 		slog.Error("claim delivery failed", "message_id", messageID, "error", err)
@@ -129,6 +157,7 @@ func (p *Processor) handleDelivery(ctx context.Context, delivery amqp.Delivery) 
 		return
 	}
 
+	start := time.Now()
 	_, err = p.operator.Send(ctx, operator.SendRequest{
 		MessageID: payload.MessageID,
 		AccountID: payload.AccountID,
@@ -162,6 +191,44 @@ func (p *Processor) handleDelivery(ctx context.Context, delivery amqp.Delivery) 
 		requeue = true
 		return
 	}
+
+	if payload.MessageType == domain.MessageTypeExpress {
+		observability.ExpressOperatorDeliverySeconds.Observe(time.Since(start).Seconds())
+	}
+}
+
+func (p *Processor) shouldDeadLetter(delivery amqp.Delivery) bool {
+	if p.cfg.MaxDeliveryAttempts <= 0 {
+		return false
+	}
+	return deliveryAttemptCount(delivery) >= p.cfg.MaxDeliveryAttempts
+}
+
+func (p *Processor) deadLetter(ctx context.Context, accountID, messageID uuid.UUID, body []byte) error {
+	err := p.db.Clauses(dbresolver.Write).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		updated, err := p.sms.MarkDeadLetteredIfAccepted(ctx, tx, accountID, messageID)
+		if err != nil {
+			return err
+		}
+		if !updated {
+			slog.Warn("sms status not updated to dead_lettered",
+				"message_id", messageID,
+				"account_id", accountID,
+			)
+		}
+		_, err = p.processed.MarkProcessedIfNew(ctx, tx, messageID)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+
+	if p.dlq != nil {
+		if err := p.dlq.PublishToDLQ(ctx, body); err != nil {
+			return fmt.Errorf("publish dlq: %w", err)
+		}
+	}
+	return nil
 }
 
 func (p *Processor) claimDelivery(ctx context.Context, accountID, messageID uuid.UUID) (deliveryClaim, error) {
@@ -177,7 +244,7 @@ func (p *Processor) claimDelivery(ctx context.Context, accountID, messageID uuid
 		}
 
 		switch msg.Status {
-		case domain.SMSStatusSent, domain.SMSStatusFailed:
+		case domain.SMSStatusSent, domain.SMSStatusFailed, domain.SMSStatusDeadLettered:
 			claim = claimAlreadyDone
 			return nil
 		}
@@ -199,7 +266,7 @@ func (p *Processor) claimDelivery(ctx context.Context, accountID, messageID uuid
 			}
 			return err
 		}
-		if msg.Status == domain.SMSStatusSent || msg.Status == domain.SMSStatusFailed {
+		if msg.Status == domain.SMSStatusSent || msg.Status == domain.SMSStatusFailed || msg.Status == domain.SMSStatusDeadLettered {
 			claim = claimAlreadyDone
 			return nil
 		}

@@ -16,6 +16,8 @@ make run-api
 
 For full async delivery, also run `make run-mock-operator`, `make run-relay`, and `make run-worker` (see SUBMISSION_EN.md Phase 4).
 
+With docker-compose, HAProxy load-balances two API replicas on port **8080** (Phase 5). Worker metrics: `http://localhost:9091/metrics`.
+
 PostgreSQL listens on port **5433** (host) to avoid conflicts with other local databases.
 
 ## API

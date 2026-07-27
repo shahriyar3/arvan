@@ -9,8 +9,12 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
+	"github.com/shahriyar/arvan/internal/broker"
 	"github.com/shahriyar/arvan/internal/config"
 	"github.com/shahriyar/arvan/internal/domain"
+	"github.com/shahriyar/arvan/internal/observability"
 	"github.com/shahriyar/arvan/internal/operator"
 	"github.com/shahriyar/arvan/internal/repository"
 	"github.com/stretchr/testify/assert"
@@ -234,7 +238,7 @@ func TestHandleDeliverySuccessMarksSent(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	processor.handleDelivery(context.Background(), amqp.Delivery{
+	processor.handleDelivery(context.Background(), broker.QueueStandard, amqp.Delivery{
 		Body:         body,
 		Acknowledger: ack,
 	})
@@ -262,7 +266,7 @@ func TestHandleDeliveryPermanentFailureMarksFailed(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	processor.handleDelivery(context.Background(), amqp.Delivery{
+	processor.handleDelivery(context.Background(), broker.QueueStandard, amqp.Delivery{
 		Body:         body,
 		Acknowledger: ack,
 	})
@@ -294,7 +298,40 @@ func TestHandleDeliveryTransientFailureReleasesClaim(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	processor.handleDelivery(context.Background(), amqp.Delivery{
+	processor.handleDelivery(context.Background(), broker.QueueStandard, amqp.Delivery{
+		Body:         body,
+		Acknowledger: ack,
+	})
+
+	assert.Equal(t, 0, ack.acked)
+	assert.Equal(t, 1, ack.nacked)
+	assert.True(t, ack.requeued)
+	assert.Equal(t, 1, op.callCount())
+
+	exists, err := processor.processed.Exists(context.Background(), messageID)
+	require.NoError(t, err)
+	assert.False(t, exists)
+
+	msg, err := processor.sms.GetByAccountAndID(context.Background(), accountID, messageID)
+	require.NoError(t, err)
+	assert.Equal(t, domain.SMSStatusAccepted, msg.Status)
+}
+
+func TestHandleDeliveryCircuitOpenRequeues(t *testing.T) {
+	op := &fakeOperator{err: operator.ErrCircuitOpen}
+	processor, accountID, messageID := newProcessorTestHarness(t, op)
+
+	ack := &stubAcknowledger{}
+	body, err := json.Marshal(domain.SMSSendPayload{
+		MessageID:   messageID.String(),
+		AccountID:   accountID.String(),
+		To:          "+989121234567",
+		Body:        "Hello",
+		MessageType: domain.MessageTypeStandard,
+	})
+	require.NoError(t, err)
+
+	processor.handleDelivery(context.Background(), broker.QueueStandard, amqp.Delivery{
 		Body:         body,
 		Acknowledger: ack,
 	})
@@ -315,4 +352,138 @@ func TestHandleDeliveryTransientFailureReleasesClaim(t *testing.T) {
 
 func TestHandleDeliveryConcurrentClaimsSingleOperatorCall(t *testing.T) {
 	t.Skip("covered by integration test TestHandleDeliveryConcurrentClaimsSingleOperatorCallIntegration")
+}
+
+type stubDLQ struct {
+	bodies   [][]byte
+	failNext bool
+}
+
+func (s *stubDLQ) PublishToDLQ(_ context.Context, body []byte) error {
+	if s.failNext {
+		s.failNext = false
+		return errors.New("dlq unavailable")
+	}
+	s.bodies = append(s.bodies, append([]byte(nil), body...))
+	return nil
+}
+
+func TestHandleDeliveryDeadLettersAfterMaxAttempts(t *testing.T) {
+	op := &fakeOperator{}
+	processor, accountID, messageID := newProcessorTestHarness(t, op)
+	processor.cfg.MaxDeliveryAttempts = 2
+	dlq := &stubDLQ{}
+	processor.SetDLQPublisher(dlq)
+
+	ack := &stubAcknowledger{}
+	body, err := json.Marshal(domain.SMSSendPayload{
+		MessageID:   messageID.String(),
+		AccountID:   accountID.String(),
+		To:          "+989121234567",
+		Body:        "Hello",
+		MessageType: domain.MessageTypeStandard,
+	})
+	require.NoError(t, err)
+
+	processor.handleDelivery(context.Background(), broker.QueueStandard, amqp.Delivery{
+		Body:         body,
+		Acknowledger: ack,
+		Redelivered:  true,
+		Headers: amqp.Table{
+			"x-death": []any{
+				amqp.Table{"count": int64(2)},
+			},
+		},
+	})
+
+	assert.Equal(t, 1, ack.acked)
+	assert.Equal(t, 0, ack.nacked)
+	assert.Equal(t, 0, op.callCount())
+	assert.Len(t, dlq.bodies, 1)
+
+	msg, err := processor.sms.GetByAccountAndID(context.Background(), accountID, messageID)
+	require.NoError(t, err)
+	assert.Equal(t, domain.SMSStatusDeadLettered, msg.Status)
+}
+
+func TestHandleDeliveryDeadLetterPersistsStatusBeforeDLQPublish(t *testing.T) {
+	op := &fakeOperator{}
+	processor, accountID, messageID := newProcessorTestHarness(t, op)
+	processor.cfg.MaxDeliveryAttempts = 2
+	dlq := &stubDLQ{failNext: true}
+	processor.SetDLQPublisher(dlq)
+
+	body, err := json.Marshal(domain.SMSSendPayload{
+		MessageID:   messageID.String(),
+		AccountID:   accountID.String(),
+		To:          "+989121234567",
+		Body:        "Hello",
+		MessageType: domain.MessageTypeStandard,
+	})
+	require.NoError(t, err)
+
+	deadLetterHeaders := amqp.Table{
+		"x-death": []any{
+			amqp.Table{"count": int64(2)},
+		},
+	}
+
+	ack := &stubAcknowledger{}
+	processor.handleDelivery(context.Background(), broker.QueueStandard, amqp.Delivery{
+		Body:         body,
+		Acknowledger: ack,
+		Headers:      deadLetterHeaders,
+	})
+
+	assert.Equal(t, 0, ack.acked)
+	assert.Equal(t, 1, ack.nacked)
+	assert.True(t, ack.requeued)
+	assert.Len(t, dlq.bodies, 0)
+
+	msg, err := processor.sms.GetByAccountAndID(context.Background(), accountID, messageID)
+	require.NoError(t, err)
+	assert.Equal(t, domain.SMSStatusDeadLettered, msg.Status)
+
+	ack = &stubAcknowledger{}
+	processor.handleDelivery(context.Background(), broker.QueueStandard, amqp.Delivery{
+		Body:         body,
+		Acknowledger: ack,
+		Headers:      deadLetterHeaders,
+	})
+
+	assert.Equal(t, 1, ack.acked)
+	assert.Len(t, dlq.bodies, 1)
+}
+
+func histogramSampleCount(t *testing.T, histogram prometheus.Histogram) uint64 {
+	t.Helper()
+
+	ch := make(chan prometheus.Metric, 1)
+	histogram.Collect(ch)
+	pb := &dto.Metric{}
+	require.NoError(t, (<-ch).Write(pb))
+	return pb.GetHistogram().GetSampleCount()
+}
+
+func TestHandleDeliveryExpressRecordsSLAMetric(t *testing.T) {
+	op := &fakeOperator{}
+	processor, accountID, messageID := newProcessorTestHarness(t, op)
+
+	before := histogramSampleCount(t, observability.ExpressOperatorDeliverySeconds)
+
+	body, err := json.Marshal(domain.SMSSendPayload{
+		MessageID:   messageID.String(),
+		AccountID:   accountID.String(),
+		To:          "+989121234567",
+		Body:        "OTP",
+		MessageType: domain.MessageTypeExpress,
+	})
+	require.NoError(t, err)
+
+	processor.handleDelivery(context.Background(), broker.QueueExpress, amqp.Delivery{
+		Body:         body,
+		Acknowledger: &stubAcknowledger{},
+	})
+
+	assert.Equal(t, before+1, histogramSampleCount(t, observability.ExpressOperatorDeliverySeconds))
 }

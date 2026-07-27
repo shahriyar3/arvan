@@ -140,6 +140,22 @@ func (r *SMSRepository) MarkSentIfAccepted(ctx context.Context, tx *gorm.DB, acc
 	return result.RowsAffected > 0, nil
 }
 
+func (r *SMSRepository) MarkDeadLetteredIfAccepted(ctx context.Context, tx *gorm.DB, accountID, messageID uuid.UUID) (bool, error) {
+	db := tx
+	if db == nil {
+		db = writeDB(r.db)
+	}
+
+	result := db.WithContext(ctx).
+		Model(&smsMessageModel{}).
+		Where("id = ? AND account_id = ? AND status = ?", messageID, accountID, domain.SMSStatusAccepted).
+		Update("status", domain.SMSStatusDeadLettered)
+	if result.Error != nil {
+		return false, fmt.Errorf("mark sms dead_lettered: %w", result.Error)
+	}
+	return result.RowsAffected > 0, nil
+}
+
 func (r *SMSRepository) MarkFailedIfAccepted(ctx context.Context, tx *gorm.DB, accountID, messageID uuid.UUID) (bool, error) {
 	db := tx
 	if db == nil {

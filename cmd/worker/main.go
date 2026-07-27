@@ -2,18 +2,23 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/shahriyar/arvan/internal/broker"
 	"github.com/shahriyar/arvan/internal/config"
 	"github.com/shahriyar/arvan/internal/observability"
 	"github.com/shahriyar/arvan/internal/operator"
 	"github.com/shahriyar/arvan/internal/repository"
 	"github.com/shahriyar/arvan/internal/worker"
+	"github.com/sony/gobreaker"
 )
 
 func main() {
@@ -46,11 +51,23 @@ func main() {
 
 	smsRepo := repository.NewSMSRepository(db)
 	processedRepo := repository.NewProcessedConsumerRepository(db)
-	op := operator.NewHTTPClient(cfg.Operator.BaseURL, cfg.Operator.Timeout)
-	processor := worker.NewProcessor(db, smsRepo, processedRepo, op, cfg.Worker)
+
+	cbClient := operator.NewCircuitBreakerClient(
+		operator.NewHTTPClient(cfg.Operator.BaseURL, cfg.Operator.Timeout),
+		circuitBreakerSettings(cfg.Operator.CircuitBreaker),
+	)
+
+	processor := worker.NewProcessor(db, smsRepo, processedRepo, cbClient, cfg.Worker)
+	processor.SetDLQPublisher(rmq)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	if cfg.Worker.MetricsPort > 0 {
+		go serveMetrics(cfg.Worker.MetricsPort)
+	}
+
+	go reportCircuitBreakerState(ctx, cbClient)
 
 	var wg sync.WaitGroup
 	queues := []string{broker.QueueExpress, broker.QueueStandard}
@@ -90,4 +107,44 @@ func main() {
 	}
 
 	logger.Info("worker stopped")
+}
+
+func circuitBreakerSettings(cfg config.CircuitBreakerConfig) gobreaker.Settings {
+	threshold := cfg.ReadyToTrip
+	if threshold == 0 {
+		threshold = 5
+	}
+	return gobreaker.Settings{
+		Name:        "operator",
+		MaxRequests: cfg.MaxRequests,
+		Interval:    cfg.Interval,
+		Timeout:     cfg.Timeout,
+		ReadyToTrip: func(counts gobreaker.Counts) bool {
+			return counts.ConsecutiveFailures >= threshold
+		},
+	}
+}
+
+func serveMetrics(port int) {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	addr := fmt.Sprintf(":%d", port)
+	slog.Info("worker metrics server starting", "addr", addr)
+	if err := http.ListenAndServe(addr, mux); err != nil && err != http.ErrServerClosed {
+		slog.Error("metrics server failed", "error", err)
+	}
+}
+
+func reportCircuitBreakerState(ctx context.Context, client *operator.CircuitBreakerClient) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		observability.RecordCircuitBreakerState("operator", client.State())
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }

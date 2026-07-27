@@ -18,6 +18,7 @@ type Config struct {
 	Worker      WorkerConfig      `mapstructure:"worker"`
 	Operator    OperatorConfig    `mapstructure:"operator"`
 	MockOp      MockOperatorConfig `mapstructure:"mock_operator"`
+	RateLimit   RateLimitConfig   `mapstructure:"rate_limit"`
 }
 
 type AppConfig struct {
@@ -57,13 +58,32 @@ type OutboxRelayConfig struct {
 }
 
 type WorkerConfig struct {
-	PrefetchCount   int           `mapstructure:"prefetch_count"`
-	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout"`
+	PrefetchCount       int           `mapstructure:"prefetch_count"`
+	ShutdownTimeout     time.Duration `mapstructure:"shutdown_timeout"`
+	ExpressPoolSize     int           `mapstructure:"express_pool_size"`
+	StandardPoolSize    int           `mapstructure:"standard_pool_size"`
+	MaxDeliveryAttempts int           `mapstructure:"max_delivery_attempts"`
+	MetricsPort         int           `mapstructure:"metrics_port"`
+}
+
+type CircuitBreakerConfig struct {
+	MaxRequests uint32        `mapstructure:"max_requests"`
+	Interval    time.Duration `mapstructure:"interval"`
+	Timeout     time.Duration `mapstructure:"timeout"`
+	ReadyToTrip uint32        `mapstructure:"consecutive_failures"`
+}
+
+type RateLimitConfig struct {
+	Enabled   bool          `mapstructure:"enabled"`
+	Window    time.Duration `mapstructure:"window"`
+	Limit     int64         `mapstructure:"limit"`
+	KeyPrefix string        `mapstructure:"key_prefix"`
 }
 
 type OperatorConfig struct {
-	BaseURL string        `mapstructure:"base_url"`
-	Timeout time.Duration `mapstructure:"timeout"`
+	BaseURL        string               `mapstructure:"base_url"`
+	Timeout        time.Duration        `mapstructure:"timeout"`
+	CircuitBreaker CircuitBreakerConfig `mapstructure:"circuit_breaker"`
 }
 
 type MockOperatorConfig struct {
@@ -131,8 +151,20 @@ func bindEnv(v *viper.Viper) {
 		"outbox_relay.shutdown_timeout",
 		"worker.prefetch_count",
 		"worker.shutdown_timeout",
+		"worker.express_pool_size",
+		"worker.standard_pool_size",
+		"worker.max_delivery_attempts",
+		"worker.metrics_port",
 		"operator.base_url",
 		"operator.timeout",
+		"operator.circuit_breaker.max_requests",
+		"operator.circuit_breaker.interval",
+		"operator.circuit_breaker.timeout",
+		"operator.circuit_breaker.consecutive_failures",
+		"rate_limit.enabled",
+		"rate_limit.window",
+		"rate_limit.limit",
+		"rate_limit.key_prefix",
 		"mock_operator.host",
 		"mock_operator.port",
 		"mock_operator.min_latency",
@@ -173,9 +205,22 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault("worker.prefetch_count", 10)
 	v.SetDefault("worker.shutdown_timeout", "30s")
+	v.SetDefault("worker.express_pool_size", 20)
+	v.SetDefault("worker.standard_pool_size", 50)
+	v.SetDefault("worker.max_delivery_attempts", 5)
+	v.SetDefault("worker.metrics_port", 9091)
 
 	v.SetDefault("operator.base_url", "http://localhost:8090")
 	v.SetDefault("operator.timeout", "10s")
+	v.SetDefault("operator.circuit_breaker.max_requests", 3)
+	v.SetDefault("operator.circuit_breaker.interval", "0s")
+	v.SetDefault("operator.circuit_breaker.timeout", "30s")
+	v.SetDefault("operator.circuit_breaker.consecutive_failures", 5)
+
+	v.SetDefault("rate_limit.enabled", true)
+	v.SetDefault("rate_limit.window", "1s")
+	v.SetDefault("rate_limit.limit", 100)
+	v.SetDefault("rate_limit.key_prefix", "ratelimit")
 
 	v.SetDefault("mock_operator.host", "0.0.0.0")
 	v.SetDefault("mock_operator.port", 8090)

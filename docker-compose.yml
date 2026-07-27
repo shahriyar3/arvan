@@ -59,5 +59,92 @@ services:
       timeout: 3s
       retries: 10
 
+  api-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    environment: &api_env
+      HTTP_HOST: 0.0.0.0
+      HTTP_PORT: 8080
+      DATABASE_PRIMARY_DSN: postgres://sms:sms@postgres:5432/sms_gateway?sslmode=disable
+      REDIS_ADDR: redis:6379
+      RABBITMQ_URL: amqp://sms:sms@rabbitmq:5672/
+      OPERATOR_BASE_URL: http://mock-operator:8090
+      RATE_LIMIT_ENABLED: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    environment: *api_env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  haproxy:
+    image: haproxy:2.9-alpine
+    volumes:
+      - ./deploy/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    ports:
+      - "8080:8080"
+    depends_on:
+      api-1:
+        condition: service_healthy
+      api-2:
+        condition: service_healthy
+
+  outbox-relay:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: outbox-relay
+    environment:
+      DATABASE_PRIMARY_DSN: postgres://sms:sms@postgres:5432/sms_gateway?sslmode=disable
+      RABBITMQ_URL: amqp://sms:sms@rabbitmq:5672/
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: worker
+    environment:
+      DATABASE_PRIMARY_DSN: postgres://sms:sms@postgres:5432/sms_gateway?sslmode=disable
+      RABBITMQ_URL: amqp://sms:sms@rabbitmq:5672/
+      OPERATOR_BASE_URL: http://mock-operator:8090
+      WORKER_METRICS_PORT: 9091
+    ports:
+      - "9091:9091"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      mock-operator:
+        condition: service_healthy
+
 volumes:
   pgdata:

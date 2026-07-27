@@ -14,6 +14,8 @@ import (
 	"github.com/shahriyar/arvan/internal/handler"
 	"github.com/shahriyar/arvan/internal/middleware"
 	"github.com/shahriyar/arvan/internal/observability"
+	appredis "github.com/shahriyar/arvan/internal/redis"
+	"github.com/shahriyar/arvan/internal/ratelimit"
 	"github.com/shahriyar/arvan/internal/repository"
 	"github.com/shahriyar/arvan/internal/service"
 )
@@ -53,6 +55,20 @@ func main() {
 
 	v1 := router.Group("/v1")
 	v1.Use(middleware.AccountToken(accountRepo))
+	if cfg.RateLimit.Enabled {
+		redisClient := appredis.NewClient(cfg.Redis)
+		defer func() {
+			if err := redisClient.Close(); err != nil {
+				logger.Warn("failed to close redis client", "error", err)
+			}
+		}()
+		limiter := ratelimit.NewRedisLimiter(redisClient, ratelimit.RedisConfig{
+			Window:    cfg.RateLimit.Window,
+			Limit:     cfg.RateLimit.Limit,
+			KeyPrefix: cfg.RateLimit.KeyPrefix,
+		})
+		v1.Use(middleware.RateLimit(limiter))
+	}
 	handler.NewAccountHandler(accountService).Register(v1)
 	handler.NewSMSHandler(smsService).Register(v1, middleware.Idempotency(idempotencyRepo))
 

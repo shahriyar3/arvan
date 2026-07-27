@@ -10,6 +10,7 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/google/uuid"
+	"github.com/shahriyar/arvan/internal/broker"
 	"github.com/shahriyar/arvan/internal/config"
 	"github.com/shahriyar/arvan/internal/domain"
 	"github.com/shahriyar/arvan/internal/operator"
@@ -64,7 +65,7 @@ func TestHandleDeliveryConcurrentClaimsSingleOperatorCallIntegration(t *testing.
 		go func() {
 			defer wg.Done()
 			<-start
-			processor.handleDelivery(context.Background(), amqp.Delivery{
+			processor.handleDelivery(context.Background(), broker.QueueStandard, amqp.Delivery{
 				Body:         append([]byte(nil), body...),
 				Acknowledger: &stubAcknowledger{},
 			})

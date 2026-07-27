@@ -13,6 +13,7 @@ import (
 const (
 	QueueExpress  = "sms.express"
 	QueueStandard = "sms.standard"
+	QueueDLQ      = "sms.dlq"
 )
 
 type RabbitMQ struct {
@@ -56,7 +57,7 @@ func Connect(url string) (*RabbitMQ, error) {
 }
 
 func declareTopology(ch *amqp.Channel) error {
-	queues := []string{QueueExpress, QueueStandard}
+	queues := []string{QueueExpress, QueueStandard, QueueDLQ}
 	for _, name := range queues {
 		if _, err := ch.QueueDeclare(
 			name,
@@ -147,6 +148,10 @@ func (r *RabbitMQ) Consume(queue string, prefetch int) (<-chan amqp.Delivery, er
 	}
 
 	return deliveries, nil
+}
+
+func (r *RabbitMQ) PublishToDLQ(ctx context.Context, body []byte) error {
+	return r.Publish(ctx, QueueDLQ, body)
 }
 
 func (r *RabbitMQ) Close() error {
