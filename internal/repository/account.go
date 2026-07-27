@@ -22,7 +22,7 @@ func NewAccountRepository(db *gorm.DB) *AccountRepository {
 
 func (r *AccountRepository) FindByTokenHash(ctx context.Context, tokenHash string) (*domain.Account, error) {
 	var model accountModel
-	err := readDB(r.db).WithContext(ctx).
+	err := writeDB(r.db).WithContext(ctx).
 		Where("token_hash = ?", tokenHash).
 		First(&model).Error
 	if err != nil {
@@ -49,7 +49,7 @@ func (r *AccountRepository) UpsertByTokenHash(ctx context.Context, tokenHash str
 		return nil, fmt.Errorf("find account for upsert: %w", err)
 	}
 
-	model = accountModel{TokenHash: tokenHash}
+	model = accountModel{ID: uuid.New(), TokenHash: tokenHash}
 	if err := writeDB(r.db).WithContext(ctx).Create(&model).Error; err != nil {
 		return nil, fmt.Errorf("create account: %w", err)
 	}

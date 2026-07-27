@@ -2,12 +2,13 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	domainerrors "github.com/shahriyar/arvan/internal/domain/errors"
 	"github.com/shahriyar/arvan/internal/domain"
+	domainerrors "github.com/shahriyar/arvan/internal/domain/errors"
 )
 
 const AccountIDKey = "account_id"
@@ -28,7 +29,7 @@ func AccountToken(lookup AccountLookup) gin.HandlerFunc {
 
 		account, err := lookup.FindByTokenHash(c.Request.Context(), domain.HashToken(token))
 		if err != nil {
-			if err == domainerrors.ErrNotFound {
+			if errors.Is(err, domainerrors.ErrNotFound) {
 				writeUnauthorized(c, "invalid account token")
 				return
 			}

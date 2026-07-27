@@ -107,6 +107,10 @@ func (h *AccountHandler) ListLedger(c *gin.Context) {
 
 	entries, err := h.accounts.ListLedger(c.Request.Context(), accountID, limit, cursor)
 	if err != nil {
+		if errors.Is(err, domainerrors.ErrInvalidCursor) {
+			writeError(c, http.StatusBadRequest, "validation_error", "invalid cursor")
+			return
+		}
 		writeError(c, http.StatusInternalServerError, "internal_error", "failed to list ledger")
 		return
 	}
@@ -125,8 +129,15 @@ func (h *AccountHandler) ListLedger(c *gin.Context) {
 		items[i] = item
 	}
 
-	c.JSON(http.StatusOK, gin.H{"items": items})
+	response := gin.H{"items": items}
+	if len(entries) == limit {
+		response["next_cursor"] = entries[len(entries)-1].ID.String()
+	}
+
+	c.JSON(http.StatusOK, response)
 }
+
+const maxLedgerLimit = 100
 
 func parseLimit(raw string) int {
 	if raw == "" {
@@ -136,6 +147,9 @@ func parseLimit(raw string) int {
 	var limit int
 	if _, err := fmt.Sscanf(raw, "%d", &limit); err != nil || limit <= 0 {
 		return 20
+	}
+	if limit > maxLedgerLimit {
+		return maxLedgerLimit
 	}
 	return limit
 }

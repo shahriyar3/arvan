@@ -53,7 +53,7 @@ func readDB(db *gorm.DB) *gorm.DB {
 }
 
 type ledgerModel struct {
-	ID        uuid.UUID  `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	ID        uuid.UUID  `gorm:"type:uuid;primaryKey"`
 	AccountID uuid.UUID  `gorm:"type:uuid;not null;index:idx_account_ledger_account,priority:1"`
 	Delta     int64      `gorm:"not null"`
 	Reason    string     `gorm:"size:50;not null"`

@@ -8,7 +8,7 @@ import (
 )
 
 type accountModel struct {
-	ID        uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	ID        uuid.UUID `gorm:"type:uuid;primaryKey"`
 	TokenHash string    `gorm:"column:token_hash;size:255;not null;uniqueIndex"`
 	Balance   int64     `gorm:"not null;default:0"`
 	CreatedAt time.Time `gorm:"not null;autoCreateTime"`

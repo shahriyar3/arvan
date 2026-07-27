@@ -2,10 +2,12 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/shahriyar/arvan/internal/domain"
+	domainerrors "github.com/shahriyar/arvan/internal/domain/errors"
 	"gorm.io/gorm"
 )
 
@@ -63,6 +65,9 @@ func (r *LedgerRepository) ListByAccount(
 		if err := readDB(r.db).WithContext(ctx).
 			Where("id = ? AND account_id = ?", *cursor, accountID).
 			First(&anchor).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, domainerrors.ErrInvalidCursor
+			}
 			return nil, fmt.Errorf("resolve ledger cursor: %w", err)
 		}
 		query = query.Where(

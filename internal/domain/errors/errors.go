@@ -7,4 +7,5 @@ var (
 	ErrInsufficientBalance = errors.New("insufficient balance")
 	ErrNotFound            = errors.New("not found")
 	ErrInvalidAmount       = errors.New("invalid amount")
+	ErrInvalidCursor       = errors.New("invalid cursor")
 )
