@@ -58,11 +58,6 @@ func (s *SMSService) Send(ctx context.Context, accountID uuid.UUID, input domain
 
 	var result domain.SendSMSResult
 	err = s.accounts.DB().Clauses(dbresolver.Write).WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		lockedBalance, err := s.accounts.LockAccountForUpdate(ctx, tx, accountID)
-		if err != nil {
-			return err
-		}
-
 		if input.IdempotencyKey != nil && *input.IdempotencyKey != "" {
 			record, claimed, err := s.idempotency.ClaimOrGet(ctx, tx, accountID, *input.IdempotencyKey)
 			if err != nil {
@@ -82,6 +77,11 @@ func (s *SMSService) Send(ctx context.Context, accountID uuid.UUID, input domain
 				}
 				return domainerrors.ErrIdempotencyInProgress
 			}
+		}
+
+		lockedBalance, err := s.accounts.LockAccountForUpdate(ctx, tx, accountID)
+		if err != nil {
+			return err
 		}
 
 		if lockedBalance < cost {

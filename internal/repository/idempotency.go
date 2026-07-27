@@ -26,7 +26,7 @@ func (r *IdempotencyRepository) FindByAccountAndKey(
 	key string,
 ) (*domain.IdempotencyRecord, error) {
 	var model idempotencyKeyModel
-	err := readDB(r.db).WithContext(ctx).
+	err := writeDB(r.db).WithContext(ctx).
 		Where("account_id = ? AND idempotency_key = ?", accountID, key).
 		First(&model).Error
 	if err != nil {
