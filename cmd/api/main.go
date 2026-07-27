@@ -36,7 +36,11 @@ func main() {
 
 	accountRepo := repository.NewAccountRepository(db)
 	ledgerRepo := repository.NewLedgerRepository(db)
+	smsRepo := repository.NewSMSRepository(db)
+	outboxRepo := repository.NewOutboxRepository(db)
+	idempotencyRepo := repository.NewIdempotencyRepository(db)
 	accountService := service.NewAccountService(accountRepo, ledgerRepo)
+	smsService := service.NewSMSService(accountRepo, ledgerRepo, smsRepo, outboxRepo, idempotencyRepo)
 
 	if cfg.App.Environment == "production" {
 		gin.SetMode(gin.ReleaseMode)
@@ -50,6 +54,7 @@ func main() {
 	v1 := router.Group("/v1")
 	v1.Use(middleware.AccountToken(accountRepo))
 	handler.NewAccountHandler(accountService).Register(v1)
+	handler.NewSMSHandler(smsService).Register(v1, middleware.Idempotency(idempotencyRepo))
 
 	server := &http.Server{
 		Addr:         cfg.HTTP.Addr(),

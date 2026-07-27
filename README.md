@@ -33,7 +33,23 @@ curl -X POST http://localhost:8080/v1/account/topup \
 
 curl http://localhost:8080/v1/account/balance \
   -H "X-Account-Token: demo-token-account-a"
+
+# Send SMS (costs 1 unit — top up first if balance is 0)
+curl -X POST http://localhost:8080/v1/sms/send \
+  -H "X-Account-Token: demo-token-account-a" \
+  -H "Content-Type: application/json" \
+  -d '{"to":"+989121234567","body":"Hello","message_type":"standard"}'
+# → 202 {"message_id":"...","status":"accepted"}
+
+# Optional: idempotency for safe retries
+curl -X POST http://localhost:8080/v1/sms/send \
+  -H "X-Account-Token: demo-token-account-a" \
+  -H "Idempotency-Key: 550e8400-e29b-41d4-a716-446655440000" \
+  -H "Content-Type: application/json" \
+  -d '{"to":"+989121234567","body":"Hello","message_type":"standard"}'
 ```
+
+**Common errors:** `401` invalid/missing token (run `make seed`, use `demo-token-account-a` not a placeholder); `402` insufficient balance (top up first).
 
 - Swagger UI: `http://localhost:8080/swagger/index.html` (Phase 6)
 - Health: `http://localhost:8080/health/ready`

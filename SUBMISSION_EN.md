@@ -10,7 +10,7 @@ Key patterns: fire-and-forget acceptance, transactional outbox, idempotent API a
 
 ## Architecture
 
-Phase 1 delivers the foundation: three Go binaries (`api`, `worker`, `outbox-relay`), PostgreSQL schema, Redis, and RabbitMQ via docker-compose. Phase 2 adds account identification, prepaid balance, and ledger audit trail. Full async pipeline, observability, and HAProxy are added in later phases.
+Phase 1 delivers the foundation: three Go binaries (`api`, `worker`, `outbox-relay`), PostgreSQL schema, Redis, and RabbitMQ via docker-compose. Phase 2 adds account identification, prepaid balance, and ledger audit trail. Phase 3 adds fire-and-forget send with transactional outbox and idempotent retries. Full async pipeline (relay + worker), observability, and HAProxy are added in later phases.
 
 ```mermaid
 flowchart LR
@@ -48,6 +48,52 @@ flowchart LR
 - `demo-token-account-b`
 
 Topup is exposed for demo/reviewer convenience; in production it would be restricted by network ACL or admin credentials.
+
+## Send SMS + Outbox (Phase 3)
+
+| Endpoint | Method | DB | Description |
+|---|---|---|---|
+| `/v1/sms/send` | POST | Write (primary) | Accept send, deduct balance, insert message + outbox in one TX → `202` |
+| `/v1/sms` | GET | Read (replica) | Cursor-paginated message list |
+| `/v1/sms/{id}` | GET | Read (replica) | Single message status |
+
+**Send transaction (same TX, lock order: account → idempotency → deduct):**
+
+```sql
+BEGIN;
+SELECT balance FROM accounts WHERE id = $1 FOR UPDATE;
+-- idempotency: claim key or return cached snapshot
+UPDATE accounts SET balance = balance - cost WHERE id = $1;
+INSERT INTO account_ledger (delta, reason='send', ref_id=message_id);
+INSERT INTO sms_messages (status='accepted', ...);
+INSERT INTO outbox_events (event_type='sms.send_requested', status='pending', payload=...);
+UPDATE idempotency_keys SET response_snapshot = ...;  -- if Idempotency-Key present
+COMMIT;
+```
+
+**Validation:** E.164 phone (`+989...`), single-page body (GSM-7 ≤160 chars, UCS-2 ≤70 for Persian/Unicode), `message_type` = `standard` | `express`. Cost = 1 unit per message (same price for EN/FA).
+
+**Idempotency:** optional header `Idempotency-Key: <UUID>`. Unique `(account_id, idempotency_key)`. Middleware fast-path returns stored `202` response; duplicate in-flight requests get `409 Conflict` instead of a second deduct. Relay/worker dedup is Phase 4.
+
+**Outbox:** rows stay `pending` until `outbox-relay` publishes to RabbitMQ (Phase 4). No RabbitMQ publish before TX commit.
+
+Example:
+
+```bash
+curl -X POST http://localhost:8080/v1/sms/send \
+  -H "X-Account-Token: demo-token-account-a" \
+  -H "Content-Type: application/json" \
+  -d '{"to":"+989121234567","body":"Hello","message_type":"standard"}'
+
+# Safe retry with idempotency
+curl -X POST http://localhost:8080/v1/sms/send \
+  -H "X-Account-Token: demo-token-account-a" \
+  -H "Idempotency-Key: 550e8400-e29b-41d4-a716-446655440000" \
+  -H "Content-Type: application/json" \
+  -d '{"to":"+989121234567","body":"Hello","message_type":"standard"}'
+```
+
+**Errors:** `402` insufficient balance, `409` idempotency in progress (retry later), `400` validation (phone, body length, message type).
 
 ## Scale Considerations
 

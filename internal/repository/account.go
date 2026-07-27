@@ -100,6 +100,67 @@ func (r *AccountRepository) LockAndAddBalance(
 	return model.Balance, nil
 }
 
+func (r *AccountRepository) LockAccountForUpdate(
+	ctx context.Context,
+	tx *gorm.DB,
+	accountID uuid.UUID,
+) (int64, error) {
+	var model accountModel
+	err := tx.WithContext(ctx).
+		Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ?", accountID).
+		First(&model).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, domainerrors.ErrNotFound
+		}
+		return 0, fmt.Errorf("lock account: %w", err)
+	}
+
+	return model.Balance, nil
+}
+
+func (r *AccountRepository) DeductLockedBalance(
+	ctx context.Context,
+	tx *gorm.DB,
+	accountID uuid.UUID,
+	cost int64,
+) (int64, error) {
+	var model accountModel
+	err := tx.WithContext(ctx).
+		Where("id = ?", accountID).
+		First(&model).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, domainerrors.ErrNotFound
+		}
+		return 0, fmt.Errorf("load locked account: %w", err)
+	}
+
+	if model.Balance < cost {
+		return 0, domainerrors.ErrInsufficientBalance
+	}
+
+	model.Balance -= cost
+	if err := tx.WithContext(ctx).Save(&model).Error; err != nil {
+		return 0, fmt.Errorf("deduct balance: %w", err)
+	}
+
+	return model.Balance, nil
+}
+
+func (r *AccountRepository) LockAndDeductBalance(
+	ctx context.Context,
+	tx *gorm.DB,
+	accountID uuid.UUID,
+	cost int64,
+) (int64, error) {
+	if _, err := r.LockAccountForUpdate(ctx, tx, accountID); err != nil {
+		return 0, err
+	}
+	return r.DeductLockedBalance(ctx, tx, accountID, cost)
+}
+
 func (r *AccountRepository) DB() *gorm.DB {
 	return r.db
 }

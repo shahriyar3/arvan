@@ -28,6 +28,8 @@ func (r *LedgerRepository) Create(ctx context.Context, tx *gorm.DB, entry domain
 	}
 	if entry.ID != uuid.Nil {
 		model.ID = entry.ID
+	} else {
+		model.ID = uuid.New()
 	}
 
 	db := tx

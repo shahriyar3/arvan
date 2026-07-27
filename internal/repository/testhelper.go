@@ -37,8 +37,14 @@ func newTestDB(t *testing.T) *gorm.DB {
 	}))
 	require.NoError(t, err)
 
-	err = db.AutoMigrate(&accountModel{}, &ledgerModel{})
+	err = db.AutoMigrate(&accountModel{}, &ledgerModel{}, &smsMessageModel{}, &outboxEventModel{}, &idempotencyKeyModel{})
 	require.NoError(t, err)
 
 	return db
+}
+
+// UsesSQLite reports whether the test database is SQLite (no concurrent write stress).
+func UsesSQLite(db *gorm.DB) bool {
+	_, ok := db.Dialector.(*sqlite.Dialector)
+	return ok
 }
