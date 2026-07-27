@@ -19,6 +19,7 @@ type Config struct {
 	Operator    OperatorConfig     `mapstructure:"operator"`
 	MockOp      MockOperatorConfig `mapstructure:"mock_operator"`
 	RateLimit   RateLimitConfig    `mapstructure:"rate_limit"`
+	Idempotency IdempotencyConfig  `mapstructure:"idempotency"`
 	Telemetry   TelemetryConfig    `mapstructure:"telemetry"`
 }
 
@@ -80,6 +81,12 @@ type RateLimitConfig struct {
 	Window    time.Duration `mapstructure:"window"`
 	Limit     int64         `mapstructure:"limit"`
 	KeyPrefix string        `mapstructure:"key_prefix"`
+}
+
+type IdempotencyConfig struct {
+	CacheEnabled bool          `mapstructure:"cache_enabled"`
+	CacheTTL     time.Duration `mapstructure:"cache_ttl"`
+	KeyPrefix    string        `mapstructure:"key_prefix"`
 }
 
 type TelemetryConfig struct {
@@ -173,6 +180,9 @@ func bindEnv(v *viper.Viper) {
 		"rate_limit.window",
 		"rate_limit.limit",
 		"rate_limit.key_prefix",
+		"idempotency.cache_enabled",
+		"idempotency.cache_ttl",
+		"idempotency.key_prefix",
 		"telemetry.enabled",
 		"telemetry.otlp_endpoint",
 		"mock_operator.host",
@@ -232,6 +242,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("rate_limit.window", "1s")
 	v.SetDefault("rate_limit.limit", 100)
 	v.SetDefault("rate_limit.key_prefix", "ratelimit")
+
+	v.SetDefault("idempotency.cache_enabled", true)
+	v.SetDefault("idempotency.cache_ttl", "24h")
+	v.SetDefault("idempotency.key_prefix", "idempotency")
 
 	v.SetDefault("telemetry.enabled", true)
 	v.SetDefault("telemetry.otlp_endpoint", "localhost:4318")

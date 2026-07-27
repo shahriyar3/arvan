@@ -37,6 +37,15 @@ func (f *fakeOutboxStore) ClaimPendingBatch(context.Context, int, time.Duration)
 	return nil, nil
 }
 
+func (f *fakeOutboxStore) IsPublished(_ context.Context, eventID uuid.UUID) (bool, error) {
+	for _, id := range f.published {
+		if id == eventID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (f *fakeOutboxStore) MarkPublished(_ context.Context, eventID uuid.UUID) error {
 	f.published = append(f.published, eventID)
 	return nil
@@ -49,6 +58,30 @@ func (f *fakeOutboxStore) RecordPublishFailure(context.Context, uuid.UUID) error
 func TestQueueForPayload(t *testing.T) {
 	assert.Equal(t, broker.QueueExpress, QueueForPayload(domain.SMSSendPayload{MessageType: domain.MessageTypeExpress}))
 	assert.Equal(t, broker.QueueStandard, QueueForPayload(domain.SMSSendPayload{MessageType: domain.MessageTypeStandard}))
+}
+
+func TestRelayPublishEventSkipsAlreadyPublished(t *testing.T) {
+	eventID := uuid.New()
+	payload := domain.SMSSendPayload{
+		MessageID:   uuid.NewString(),
+		AccountID:   uuid.NewString(),
+		To:          "+989121234567",
+		Body:        "Hello",
+		MessageType: domain.MessageTypeStandard,
+	}
+	raw, err := json.Marshal(payload)
+	require.NoError(t, err)
+
+	publisher := &fakePublisher{}
+	outboxStore := &fakeOutboxStore{published: []uuid.UUID{eventID}}
+	relay := NewRelay(outboxStore, publisher, config.OutboxRelayConfig{})
+
+	err = relay.publishEvent(context.Background(), domain.OutboxEventRecord{
+		ID:      eventID,
+		Payload: raw,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, publisher.queues)
 }
 
 func TestRelayPublishEventRoutesExpressQueue(t *testing.T) {

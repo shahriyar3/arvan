@@ -108,3 +108,35 @@ func TestProcessedConsumerRepositoryClaimIsExclusive(t *testing.T) {
 	wg.Wait()
 	assert.Equal(t, 1, insertedCount)
 }
+
+func TestOutboxRepositoryMarkPublishedIsIdempotent(t *testing.T) {
+	SkipIntegrationUnlessAvailable(t)
+	db := NewIntegrationDB(t)
+	repo := NewOutboxRepository(db)
+	ctx := context.Background()
+
+	eventID := uuid.New()
+	payload, err := json.Marshal(domain.SMSSendPayload{
+		MessageID:   uuid.NewString(),
+		AccountID:   uuid.NewString(),
+		To:          "+989121234567",
+		Body:        "Hello",
+		MessageType: domain.MessageTypeStandard,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, repo.Create(ctx, nil, domain.OutboxEvent{
+		ID:          eventID,
+		AggregateID: uuid.New(),
+		EventType:   domain.OutboxEventTypeSMSSendRequested,
+		Payload:     payload,
+		Status:      domain.OutboxStatusPending,
+	}))
+
+	require.NoError(t, repo.MarkPublished(ctx, eventID))
+	require.NoError(t, repo.MarkPublished(ctx, eventID))
+
+	published, err := repo.IsPublished(ctx, eventID)
+	require.NoError(t, err)
+	assert.True(t, published)
+}

@@ -24,11 +24,13 @@ import (
 	"github.com/gin-gonic/gin"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
+	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 
 	_ "github.com/shahriyar/arvan/api/openapi"
 	"github.com/shahriyar/arvan/internal/config"
 	"github.com/shahriyar/arvan/internal/handler"
+	"github.com/shahriyar/arvan/internal/idempotency"
 	"github.com/shahriyar/arvan/internal/middleware"
 	"github.com/shahriyar/arvan/internal/observability"
 	appredis "github.com/shahriyar/arvan/internal/redis"
@@ -75,7 +77,28 @@ func main() {
 	outboxRepo := repository.NewOutboxRepository(db)
 	idempotencyRepo := repository.NewIdempotencyRepository(db)
 	accountService := service.NewAccountService(accountRepo, ledgerRepo)
-	smsService := service.NewSMSService(accountRepo, ledgerRepo, smsRepo, outboxRepo, idempotencyRepo)
+
+	var idempotencyCache idempotency.ResponseCache
+	var redisClient *redis.Client
+	if cfg.RateLimit.Enabled || cfg.Idempotency.CacheEnabled {
+		redisClient = appredis.NewClient(cfg.Redis)
+		defer func() {
+			if err := redisClient.Close(); err != nil {
+				logger.Warn("failed to close redis client", "error", err)
+			}
+		}()
+	}
+	if cfg.Idempotency.CacheEnabled && redisClient != nil {
+		idempotencyCache = idempotency.NewRedisResponseCache(redisClient, idempotency.RedisCacheConfig{
+			TTL:       cfg.Idempotency.CacheTTL,
+			KeyPrefix: cfg.Idempotency.KeyPrefix,
+		})
+	}
+
+	smsService := service.NewSMSServiceWithCache(
+		accountRepo, ledgerRepo, smsRepo, outboxRepo, idempotencyRepo, idempotencyCache,
+	)
+	idempotencyLookup := idempotency.NewCompositeLookup(idempotencyRepo, idempotencyCache)
 
 	metricsCtx, metricsCancel := context.WithCancel(context.Background())
 	defer metricsCancel()
@@ -99,12 +122,10 @@ func main() {
 	v1.Use(middleware.AccountToken(accountRepo))
 	v1.Use(middleware.SMSAcceptMetrics())
 	if cfg.RateLimit.Enabled {
-		redisClient := appredis.NewClient(cfg.Redis)
-		defer func() {
-			if err := redisClient.Close(); err != nil {
-				logger.Warn("failed to close redis client", "error", err)
-			}
-		}()
+		if redisClient == nil {
+			logger.Error("rate limit enabled but redis client is unavailable")
+			os.Exit(1)
+		}
 		limiter := ratelimit.NewRedisLimiter(redisClient, ratelimit.RedisConfig{
 			Window:    cfg.RateLimit.Window,
 			Limit:     cfg.RateLimit.Limit,
@@ -113,7 +134,7 @@ func main() {
 		v1.Use(middleware.RateLimit(limiter))
 	}
 	handler.NewAccountHandler(accountService).Register(v1)
-	handler.NewSMSHandler(smsService).Register(v1, middleware.Idempotency(idempotencyRepo))
+	handler.NewSMSHandler(smsService).Register(v1, middleware.Idempotency(idempotencyLookup))
 
 	server := &http.Server{
 		Addr:         cfg.HTTP.Addr(),

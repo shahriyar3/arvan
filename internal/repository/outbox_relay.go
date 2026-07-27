@@ -64,6 +64,18 @@ func (r *OutboxRepository) ClaimPendingBatch(
 	return claimed, nil
 }
 
+func (r *OutboxRepository) IsPublished(ctx context.Context, eventID uuid.UUID) (bool, error) {
+	var model outboxEventModel
+	err := writeDB(r.db).WithContext(ctx).
+		Select("status").
+		Where("id = ?", eventID).
+		First(&model).Error
+	if err != nil {
+		return false, fmt.Errorf("get outbox event status: %w", err)
+	}
+	return model.Status == domain.OutboxStatusPublished, nil
+}
+
 func (r *OutboxRepository) MarkPublished(ctx context.Context, eventID uuid.UUID) error {
 	now := time.Now().UTC()
 	result := writeDB(r.db).WithContext(ctx).
@@ -78,6 +90,13 @@ func (r *OutboxRepository) MarkPublished(ctx context.Context, eventID uuid.UUID)
 		return fmt.Errorf("mark outbox published: %w", result.Error)
 	}
 	if result.RowsAffected == 0 {
+		published, err := r.IsPublished(ctx, eventID)
+		if err != nil {
+			return err
+		}
+		if published {
+			return nil
+		}
 		return fmt.Errorf("mark outbox published: event %s not pending", eventID)
 	}
 	return nil

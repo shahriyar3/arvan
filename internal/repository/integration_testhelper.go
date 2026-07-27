@@ -126,7 +126,7 @@ func IntegrationDBAvailable() bool {
 	if err != nil {
 		return false
 	}
-	defer sqlDB.Close()
+	defer func() { _ = sqlDB.Close() }()
 	return sqlDB.Ping() == nil
 }
 

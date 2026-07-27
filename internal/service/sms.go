@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/shahriyar/arvan/internal/domain"
 	domainerrors "github.com/shahriyar/arvan/internal/domain/errors"
+	"github.com/shahriyar/arvan/internal/idempotency"
 	"github.com/shahriyar/arvan/internal/observability"
 	"github.com/shahriyar/arvan/internal/repository"
 	"go.opentelemetry.io/otel/attribute"
@@ -19,11 +20,12 @@ import (
 )
 
 type SMSService struct {
-	accounts    *repository.AccountRepository
-	ledger      *repository.LedgerRepository
-	sms         *repository.SMSRepository
-	outbox      *repository.OutboxRepository
-	idempotency *repository.IdempotencyRepository
+	accounts         *repository.AccountRepository
+	ledger           *repository.LedgerRepository
+	sms              *repository.SMSRepository
+	outbox           *repository.OutboxRepository
+	idempotency      *repository.IdempotencyRepository
+	idempotencyCache idempotency.ResponseCache
 }
 
 func NewSMSService(
@@ -33,12 +35,24 @@ func NewSMSService(
 	outbox *repository.OutboxRepository,
 	idempotency *repository.IdempotencyRepository,
 ) *SMSService {
+	return NewSMSServiceWithCache(accounts, ledger, sms, outbox, idempotency, nil)
+}
+
+func NewSMSServiceWithCache(
+	accounts *repository.AccountRepository,
+	ledger *repository.LedgerRepository,
+	sms *repository.SMSRepository,
+	outbox *repository.OutboxRepository,
+	idempotency *repository.IdempotencyRepository,
+	cache idempotency.ResponseCache,
+) *SMSService {
 	return &SMSService{
-		accounts:    accounts,
-		ledger:      ledger,
-		sms:         sms,
-		outbox:      outbox,
-		idempotency: idempotency,
+		accounts:         accounts,
+		ledger:           ledger,
+		sms:              sms,
+		outbox:           outbox,
+		idempotency:      idempotency,
+		idempotencyCache: cache,
 	}
 }
 
@@ -169,6 +183,13 @@ func (s *SMSService) Send(ctx context.Context, accountID uuid.UUID, input domain
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		return domain.SendSMSResult{}, fmt.Errorf("send sms: %w", err)
+	}
+
+	if input.IdempotencyKey != nil && *input.IdempotencyKey != "" && s.idempotencyCache != nil {
+		_ = s.idempotencyCache.Set(ctx, accountID, *input.IdempotencyKey, domain.IdempotencyResponse{
+			MessageID: result.MessageID.String(),
+			Status:    result.Status,
+		})
 	}
 
 	return result, nil

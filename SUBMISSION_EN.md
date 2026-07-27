@@ -32,14 +32,14 @@ flowchart LR
 - **Modular monolith** with separate binaries for API, worker, and outbox relay — simpler ops for a 7-day challenge while keeping clear scaling boundaries.
 - **Transactional outbox** ensures balance deduction and message enqueue are atomic (implemented in Phase 3).
 - **Pre-seeded `X-Account-Token`** instead of a full auth system, per challenge requirements. Tokens are stored as SHA-256 hashes; middleware resolves `account_id` on every `/v1/*` request.
-- **CQRS-lite read/write split** via GORM dbresolver: mutations hit primary; balance/ledger reads can use replica (falls back to primary in local dev).
+- **CQRS-lite read/write split** via GORM dbresolver: mutations hit primary; ledger and SMS list/get reads use replica (falls back to primary in local dev). **Balance reads use primary** so clients see sends/topups immediately without replica lag.
 
 ## Account & Balance (Phase 2)
 
 | Endpoint | Method | DB | Description |
 |---|---|---|---|
 | `/v1/account/topup` | POST | Write (primary) | Demo/admin topup — increases balance + ledger entry in one TX |
-| `/v1/account/balance` | GET | Read (replica) | Current prepaid balance |
+| `/v1/account/balance` | GET | Read (primary) | Current prepaid balance (primary avoids stale reads after send/topup) |
 | `/v1/account/ledger` | GET | Read (replica) | Cursor-paginated topup/deduct history |
 
 **Topup transaction:** `BEGIN` → `SELECT ... FOR UPDATE` on account → update balance → insert `account_ledger` (reason=`topup`) → `COMMIT`.
@@ -77,7 +77,7 @@ COMMIT;
 
 **Validation:** E.164 phone (`+989...`), single-page body (GSM-7 ≤160 chars, UCS-2 ≤70 for Persian/Unicode), `message_type` = `standard` | `express`. Cost = 1 unit per message (same price for EN/FA).
 
-**Idempotency:** optional header `Idempotency-Key: <UUID>`. Unique `(account_id, idempotency_key)`. Middleware fast-path returns stored `202` response; duplicate in-flight requests get `409 Conflict` instead of a second deduct. Worker dedup via `processed_consumer_events` (Phase 4).
+**Idempotency:** optional header `Idempotency-Key: <UUID>`. Unique `(account_id, idempotency_key)`. Middleware fast-path checks **Redis cache** (24h TTL, optional) then PostgreSQL; returns stored `202` response. Duplicate in-flight requests get `409 Conflict` instead of a second deduct. Worker dedup via `processed_consumer_events` (Phase 4).
 
 **Outbox:** relay publishes pending rows to RabbitMQ with publisher confirms; worker completes delivery (Phase 4). No RabbitMQ publish before TX commit.
 
@@ -117,7 +117,7 @@ API TX (deduct + sms_messages + outbox pending)
 | `worker` | Consumes both queues, calls mock operator, updates status |
 | `mock-operator` | Configurable latency/failure HTTP stand-in for telco operator |
 
-**Relay:** `SELECT ... WHERE status='pending' FOR UPDATE SKIP LOCKED`, set `locked_until`, publish JSON payload, then `UPDATE status='published'`. On publish failure: increment `retry_count`, release lock — no RabbitMQ publish before TX commit (write path unchanged from Phase 3).
+**Relay:** `SELECT ... WHERE status='pending' FOR UPDATE SKIP LOCKED`, set `locked_until`, skip if already `published`, publish JSON payload with publisher confirms, then `UPDATE status='published'` (idempotent mark with retries). If publish succeeds but mark fails, the relay **does not** release the lock for immediate republish — it retries mark on the next poll. On publish failure: increment `retry_count`, release lock. Duplicate publishes (at-least-once) are safe because workers dedup by `message_id`.
 
 **Worker dedup:** `processed_consumer_events(message_id)` claim with `ON CONFLICT DO NOTHING` **before** operator call; transient failures release the claim for retry; permanent operator errors mark `failed` and ack. Duplicate deliveries are acked without double operator calls.
 
@@ -281,7 +281,7 @@ make test-integration   # PostgreSQL integration (requires docker compose postgr
 | Layer | Coverage |
 |---|---|
 | Unit | domain validation (E.164, GSM-7/UCS-2), idempotency, rate limiter, circuit breaker |
-| Integration | balance TX, send + outbox, idempotency concurrency, 100-goroutine spend limit |
+| Integration | balance TX, send + outbox, idempotency concurrency, 100-goroutine send spend limit, 100-goroutine topup |
 | API | handler status codes (402, 409), cursor pagination, multi-tenant isolation |
 | Concurrency | `-race` on 100 parallel sends with balance=100 → balance=0, no overdraft |
 | Load | k6 script — default 80 RPS (fits rate limit); stress target 1K RPS with raised limit |

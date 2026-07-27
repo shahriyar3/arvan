@@ -1,6 +1,9 @@
-.PHONY: help build run-api run-worker run-relay run-mock-operator run-seed test test-race test-integration lint check migrate-up migrate-down seed demo load-test load-test-stress tidy swagger
+.PHONY: help build run-api run-worker run-relay run-mock-operator run-seed test test-race test-integration lint lint-install check migrate-up migrate-down seed demo load-test load-test-stress tidy swagger
 
 GO ?= go
+GOLANGCI_LINT ?= $(shell command -v golangci-lint 2>/dev/null || echo $(HOME)/go/bin/golangci-lint)
+GOLANGCI_LINT_VERSION ?= latest
+GOLANGCI_LINT_MODULE ?= github.com/golangci/golangci-lint/v2/cmd/golangci-lint
 MIGRATE ?= $(shell command -v migrate 2>/dev/null || echo $(HOME)/go/bin/migrate)
 MIGRATE_DATABASE_URL ?= postgres://sms:sms@localhost:5433/sms_gateway?sslmode=disable
 TEST_DATABASE_URL ?= postgres://sms:sms@localhost:5433/sms_gateway_test?sslmode=disable
@@ -70,8 +73,12 @@ test-integration-setup:
 test-integration: test-integration-setup
 	TEST_DATABASE_URL="$(TEST_DATABASE_URL)" $(GO) test -race -p 1 -tags=integration ./internal/service/ ./internal/handler/ ./internal/repository/ ./internal/worker/
 
+lint-install:
+	$(GO) install $(GOLANGCI_LINT_MODULE)@$(GOLANGCI_LINT_VERSION)
+
 lint:
-	@command -v golangci-lint >/dev/null 2>&1 && golangci-lint run ./... || $(GO) vet ./...
+	@test -x "$(GOLANGCI_LINT)" || $(MAKE) lint-install
+	$(GOLANGCI_LINT) run ./...
 
 check: lint test-race test-integration
 

@@ -59,7 +59,7 @@ func (c *HTTPClient) Send(ctx context.Context, req SendRequest) (SendResult, err
 	if err != nil {
 		return SendResult{}, fmt.Errorf("call operator: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
