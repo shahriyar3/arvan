@@ -9,7 +9,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/shahriyar/arvan/internal/domain"
 	domainerrors "github.com/shahriyar/arvan/internal/domain/errors"
+	"github.com/shahriyar/arvan/internal/observability"
 	"github.com/shahriyar/arvan/internal/repository"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"gorm.io/gorm"
 	"gorm.io/plugin/dbresolver"
 )
@@ -39,6 +43,14 @@ func NewSMSService(
 }
 
 func (s *SMSService) Send(ctx context.Context, accountID uuid.UUID, input domain.SendSMSInput) (domain.SendSMSResult, error) {
+	ctx, span := observability.StartSpan(ctx, "sms.send",
+		trace.WithAttributes(
+			attribute.String("account_id", accountID.String()),
+			attribute.String("message_type", input.MessageType),
+		),
+	)
+	defer span.End()
+
 	encoding, err := validateSendInput(input)
 	if err != nil {
 		return domain.SendSMSResult{}, err
@@ -77,10 +89,12 @@ func (s *SMSService) Send(ctx context.Context, accountID uuid.UUID, input domain
 		}
 
 		if lockedBalance < cost {
+			observability.RecordBalanceDeductError()
 			return domainerrors.ErrInsufficientBalance
 		}
 
 		if _, err := s.accounts.DeductLockedBalance(ctx, tx, accountID, cost); err != nil {
+			observability.RecordBalanceDeductError()
 			return err
 		}
 
@@ -113,11 +127,12 @@ func (s *SMSService) Send(ctx context.Context, accountID uuid.UUID, input domain
 		}
 
 		payload, err := json.Marshal(domain.SMSSendPayload{
-			MessageID:   messageID.String(),
-			AccountID:   accountID.String(),
-			To:          input.To,
-			Body:        input.Body,
-			MessageType: input.MessageType,
+			MessageID:    messageID.String(),
+			AccountID:    accountID.String(),
+			To:           input.To,
+			Body:         input.Body,
+			MessageType:  input.MessageType,
+			TraceContext: observability.InjectMap(ctx),
 		})
 		if err != nil {
 			return fmt.Errorf("marshal outbox payload: %w", err)
@@ -151,6 +166,8 @@ func (s *SMSService) Send(ctx context.Context, accountID uuid.UUID, input domain
 		return nil
 	})
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return domain.SendSMSResult{}, fmt.Errorf("send sms: %w", err)
 	}
 

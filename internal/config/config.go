@@ -9,16 +9,17 @@ import (
 )
 
 type Config struct {
-	App         AppConfig         `mapstructure:"app"`
-	HTTP        HTTPConfig        `mapstructure:"http"`
-	Database    DatabaseConfig    `mapstructure:"database"`
-	Redis       RedisConfig       `mapstructure:"redis"`
-	RabbitMQ    RabbitMQConfig    `mapstructure:"rabbitmq"`
-	OutboxRelay OutboxRelayConfig `mapstructure:"outbox_relay"`
-	Worker      WorkerConfig      `mapstructure:"worker"`
-	Operator    OperatorConfig    `mapstructure:"operator"`
+	App         AppConfig          `mapstructure:"app"`
+	HTTP        HTTPConfig         `mapstructure:"http"`
+	Database    DatabaseConfig     `mapstructure:"database"`
+	Redis       RedisConfig        `mapstructure:"redis"`
+	RabbitMQ    RabbitMQConfig     `mapstructure:"rabbitmq"`
+	OutboxRelay OutboxRelayConfig  `mapstructure:"outbox_relay"`
+	Worker      WorkerConfig       `mapstructure:"worker"`
+	Operator    OperatorConfig     `mapstructure:"operator"`
 	MockOp      MockOperatorConfig `mapstructure:"mock_operator"`
-	RateLimit   RateLimitConfig   `mapstructure:"rate_limit"`
+	RateLimit   RateLimitConfig    `mapstructure:"rate_limit"`
+	Telemetry   TelemetryConfig    `mapstructure:"telemetry"`
 }
 
 type AppConfig struct {
@@ -55,6 +56,7 @@ type OutboxRelayConfig struct {
 	BatchSize       int           `mapstructure:"batch_size"`
 	LockDuration    time.Duration `mapstructure:"lock_duration"`
 	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout"`
+	MetricsPort     int           `mapstructure:"metrics_port"`
 }
 
 type WorkerConfig struct {
@@ -78,6 +80,11 @@ type RateLimitConfig struct {
 	Window    time.Duration `mapstructure:"window"`
 	Limit     int64         `mapstructure:"limit"`
 	KeyPrefix string        `mapstructure:"key_prefix"`
+}
+
+type TelemetryConfig struct {
+	Enabled      bool   `mapstructure:"enabled"`
+	OTLPEndpoint string `mapstructure:"otlp_endpoint"`
 }
 
 type OperatorConfig struct {
@@ -149,6 +156,7 @@ func bindEnv(v *viper.Viper) {
 		"outbox_relay.batch_size",
 		"outbox_relay.lock_duration",
 		"outbox_relay.shutdown_timeout",
+		"outbox_relay.metrics_port",
 		"worker.prefetch_count",
 		"worker.shutdown_timeout",
 		"worker.express_pool_size",
@@ -165,6 +173,8 @@ func bindEnv(v *viper.Viper) {
 		"rate_limit.window",
 		"rate_limit.limit",
 		"rate_limit.key_prefix",
+		"telemetry.enabled",
+		"telemetry.otlp_endpoint",
 		"mock_operator.host",
 		"mock_operator.port",
 		"mock_operator.min_latency",
@@ -202,6 +212,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("outbox_relay.batch_size", 50)
 	v.SetDefault("outbox_relay.lock_duration", "30s")
 	v.SetDefault("outbox_relay.shutdown_timeout", "15s")
+	v.SetDefault("outbox_relay.metrics_port", 9092)
 
 	v.SetDefault("worker.prefetch_count", 10)
 	v.SetDefault("worker.shutdown_timeout", "30s")
@@ -221,6 +232,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("rate_limit.window", "1s")
 	v.SetDefault("rate_limit.limit", 100)
 	v.SetDefault("rate_limit.key_prefix", "ratelimit")
+
+	v.SetDefault("telemetry.enabled", true)
+	v.SetDefault("telemetry.otlp_endpoint", "localhost:4318")
 
 	v.SetDefault("mock_operator.host", "0.0.0.0")
 	v.SetDefault("mock_operator.port", 8090)

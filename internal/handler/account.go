@@ -34,9 +34,20 @@ func (h *AccountHandler) Register(r gin.IRouter) {
 }
 
 type topupRequest struct {
-	Amount int64 `json:"amount" binding:"required"`
+	Amount int64 `json:"amount" binding:"required" example:"1000"`
 }
 
+// Topup godoc
+// @Summary Top up prepaid balance
+// @Tags account
+// @Accept json
+// @Produce json
+// @Security AccountToken
+// @Param body body topupRequest true "Topup amount"
+// @Success 200 {object} map[string]int64
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Router /v1/account/topup [post]
 func (h *AccountHandler) Topup(c *gin.Context) {
 	accountID, ok := middleware.AccountID(c)
 	if !ok {
@@ -66,6 +77,15 @@ func (h *AccountHandler) Topup(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"balance": balance})
 }
 
+// GetBalance godoc
+// @Summary Get current balance
+// @Tags account
+// @Produce json
+// @Security AccountToken
+// @Success 200 {object} map[string]int64
+// @Failure 401 {object} map[string]interface{}
+// @Failure 404 {object} map[string]interface{}
+// @Router /v1/account/balance [get]
 func (h *AccountHandler) GetBalance(c *gin.Context) {
 	accountID, ok := middleware.AccountID(c)
 	if !ok {
@@ -86,6 +106,17 @@ func (h *AccountHandler) GetBalance(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"balance": balance})
 }
 
+// ListLedger godoc
+// @Summary List ledger entries
+// @Tags account
+// @Produce json
+// @Security AccountToken
+// @Param cursor query string false "Cursor for pagination"
+// @Param limit query int false "Page size (max 100)"
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Router /v1/account/ledger [get]
 func (h *AccountHandler) ListLedger(c *gin.Context) {
 	accountID, ok := middleware.AccountID(c)
 	if !ok {

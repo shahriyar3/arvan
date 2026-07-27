@@ -29,6 +29,7 @@ FROM alpine:3.20 AS outbox-relay
 RUN apk add --no-cache ca-certificates
 WORKDIR /app
 COPY --from=builder /out/outbox-relay /app/outbox-relay
+EXPOSE 9092
 ENTRYPOINT ["/app/outbox-relay"]
 
 FROM alpine:3.20 AS mock-operator

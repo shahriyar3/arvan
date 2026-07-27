@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 type HTTPClient struct {
@@ -19,7 +21,8 @@ func NewHTTPClient(baseURL string, timeout time.Duration) *HTTPClient {
 	return &HTTPClient{
 		baseURL: baseURL,
 		httpClient: &http.Client{
-			Timeout: timeout,
+			Timeout:   timeout,
+			Transport: otelhttp.NewTransport(http.DefaultTransport),
 		},
 	}
 }

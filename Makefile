@@ -1,12 +1,13 @@
-.PHONY: help build run-api run-worker run-relay run-mock-operator run-seed test test-race test-integration lint check migrate-up migrate-down seed tidy
+.PHONY: help build run-api run-worker run-relay run-mock-operator run-seed test test-race test-integration lint check migrate-up migrate-down seed tidy swagger
 
 GO ?= go
 MIGRATE ?= $(shell command -v migrate 2>/dev/null || echo $(HOME)/go/bin/migrate)
 MIGRATE_DATABASE_URL ?= postgres://sms:sms@localhost:5433/sms_gateway?sslmode=disable
 TEST_DATABASE_URL ?= postgres://sms:sms@localhost:5433/sms_gateway_test?sslmode=disable
+SWAG ?= $(shell command -v swag 2>/dev/null || echo $(HOME)/go/bin/swag)
 
 help:
-	@echo "Targets: build, run-api, seed, test, test-integration, check, migrate-up, migrate-down"
+	@echo "Targets: build, run-api, seed, test, test-integration, check, migrate-up, migrate-down, swagger"
 
 build:
 	$(GO) build -o bin/api ./cmd/api
@@ -57,3 +58,6 @@ migrate-down:
 
 tidy:
 	$(GO) mod tidy
+
+swagger:
+	$(SWAG) init -g cmd/api/main.go --output api/openapi --parseDependency --parseInternal

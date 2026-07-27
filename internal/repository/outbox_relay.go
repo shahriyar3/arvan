@@ -110,3 +110,15 @@ func toDomainOutbox(m outboxEventModel) domain.OutboxEventRecord {
 		CreatedAt:   m.CreatedAt,
 	}
 }
+
+func (r *OutboxRepository) CountPending(ctx context.Context) (int64, error) {
+	var count int64
+	err := writeDB(r.db).WithContext(ctx).
+		Model(&outboxEventModel{}).
+		Where("status = ?", domain.OutboxStatusPending).
+		Count(&count).Error
+	if err != nil {
+		return 0, fmt.Errorf("count pending outbox events: %w", err)
+	}
+	return count, nil
+}

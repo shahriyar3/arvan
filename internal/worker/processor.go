@@ -17,6 +17,9 @@ import (
 	"github.com/shahriyar/arvan/internal/observability"
 	"github.com/shahriyar/arvan/internal/operator"
 	"github.com/shahriyar/arvan/internal/repository"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"gorm.io/gorm"
 	"gorm.io/plugin/dbresolver"
 )
@@ -108,12 +111,12 @@ func (p *Processor) handleDelivery(ctx context.Context, queue string, delivery a
 	defer func() {
 		if requeue {
 			if err := delivery.Nack(false, true); err != nil {
-				slog.Error("nack delivery", "error", err)
+				slog.ErrorContext(ctx, "nack delivery", "error", err)
 			}
 			return
 		}
 		if err := delivery.Ack(false); err != nil {
-			slog.Error("ack delivery", "error", err)
+			slog.ErrorContext(ctx, "ack delivery", "error", err)
 		}
 	}()
 
@@ -123,20 +126,31 @@ func (p *Processor) handleDelivery(ctx context.Context, queue string, delivery a
 		return
 	}
 
+	traceCtx := observability.ExtractMap(ctx, payload.TraceContext)
+	traceCtx = observability.ExtractAMQP(traceCtx, delivery.Headers)
+	traceCtx, span := observability.StartSpan(traceCtx, "worker.process",
+		trace.WithAttributes(
+			attribute.String("queue", queue),
+			attribute.String("message_id", payload.MessageID),
+		),
+	)
+	defer span.End()
+	ctx = traceCtx
+
 	messageID, err := uuid.Parse(payload.MessageID)
 	if err != nil {
-		slog.Error("invalid message_id in payload", "error", err)
+		slog.ErrorContext(ctx, "invalid message_id in payload", "error", err)
 		return
 	}
 	accountID, err := uuid.Parse(payload.AccountID)
 	if err != nil {
-		slog.Error("invalid account_id in payload", "error", err)
+		slog.ErrorContext(ctx, "invalid account_id in payload", "error", err)
 		return
 	}
 
 	if p.shouldDeadLetter(delivery) {
 		if err := p.deadLetter(ctx, accountID, messageID, delivery.Body); err != nil {
-			slog.Error("dead letter delivery failed", "message_id", messageID, "error", err)
+			slog.ErrorContext(ctx, "dead letter delivery failed", "message_id", messageID, "error", err)
 			requeue = true
 		}
 		return
@@ -144,13 +158,13 @@ func (p *Processor) handleDelivery(ctx context.Context, queue string, delivery a
 
 	claim, err := p.claimDelivery(ctx, accountID, messageID)
 	if err != nil {
-		slog.Error("claim delivery failed", "message_id", messageID, "error", err)
+		slog.ErrorContext(ctx, "claim delivery failed", "message_id", messageID, "error", err)
 		requeue = true
 		return
 	}
 	switch claim {
 	case claimAlreadyDone:
-		slog.Info("skip duplicate delivery", "message_id", messageID)
+		slog.InfoContext(ctx, "skip duplicate delivery", "message_id", messageID)
 		return
 	case claimInProgress:
 		requeue = true
@@ -158,36 +172,42 @@ func (p *Processor) handleDelivery(ctx context.Context, queue string, delivery a
 	}
 
 	start := time.Now()
-	_, err = p.operator.Send(ctx, operator.SendRequest{
+	opCtx, opSpan := observability.StartSpan(ctx, "operator.send",
+		trace.WithAttributes(attribute.String("message_id", payload.MessageID)),
+	)
+	_, err = p.operator.Send(opCtx, operator.SendRequest{
 		MessageID: payload.MessageID,
 		AccountID: payload.AccountID,
 		To:        payload.To,
 		Body:      payload.Body,
 	})
+	opSpan.End()
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		if operator.IsPermanent(err) {
 			if markErr := p.markFailed(ctx, accountID, messageID); markErr != nil {
-				slog.Error("mark sms failed", "message_id", messageID, "error", markErr)
+				slog.ErrorContext(ctx, "mark sms failed", "message_id", messageID, "error", markErr)
 				requeue = true
 				return
 			}
-			slog.Warn("operator permanently rejected sms", "message_id", messageID, "error", err)
+			slog.WarnContext(ctx, "operator permanently rejected sms", "message_id", messageID, "error", err)
 			return
 		}
 
 		if releaseErr := p.releaseClaim(ctx, messageID); releaseErr != nil {
-			slog.Error("release delivery claim", "message_id", messageID, "error", releaseErr)
+			slog.ErrorContext(ctx, "release delivery claim", "message_id", messageID, "error", releaseErr)
 		}
-		slog.Warn("operator send failed", "message_id", messageID, "error", err)
+		slog.WarnContext(ctx, "operator send failed", "message_id", messageID, "error", err)
 		requeue = true
 		return
 	}
 
 	if err := p.markSent(ctx, accountID, messageID); err != nil {
 		if releaseErr := p.releaseClaim(ctx, messageID); releaseErr != nil {
-			slog.Error("release delivery claim", "message_id", messageID, "error", releaseErr)
+			slog.ErrorContext(ctx, "release delivery claim", "message_id", messageID, "error", releaseErr)
 		}
-		slog.Error("mark sms sent failed", "message_id", messageID, "error", err)
+		slog.ErrorContext(ctx, "mark sms sent failed", "message_id", messageID, "error", err)
 		requeue = true
 		return
 	}
@@ -211,7 +231,7 @@ func (p *Processor) deadLetter(ctx context.Context, accountID, messageID uuid.UU
 			return err
 		}
 		if !updated {
-			slog.Warn("sms status not updated to dead_lettered",
+			slog.WarnContext(ctx, "sms status not updated to dead_lettered",
 				"message_id", messageID,
 				"account_id", accountID,
 			)
@@ -291,7 +311,7 @@ func (p *Processor) markSent(ctx context.Context, accountID, messageID uuid.UUID
 			return err
 		}
 		if !updated {
-			slog.Warn("sms status not updated to sent",
+			slog.WarnContext(ctx, "sms status not updated to sent",
 				"message_id", messageID,
 				"account_id", accountID,
 			)
@@ -307,7 +327,7 @@ func (p *Processor) markFailed(ctx context.Context, accountID, messageID uuid.UU
 			return err
 		}
 		if !updated {
-			slog.Warn("sms status not updated to failed",
+			slog.WarnContext(ctx, "sms status not updated to failed",
 				"message_id", messageID,
 				"account_id", accountID,
 			)

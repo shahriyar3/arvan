@@ -33,11 +33,26 @@ func (h *SMSHandler) Register(r gin.IRouter, idempotency gin.HandlerFunc) {
 }
 
 type sendSMSRequest struct {
-	To          string `json:"to" binding:"required"`
-	Body        string `json:"body" binding:"required"`
-	MessageType string `json:"message_type" binding:"required"`
+	To          string `json:"to" binding:"required" example:"+989121234567"`
+	Body        string `json:"body" binding:"required" example:"Hello"`
+	MessageType string `json:"message_type" binding:"required" example:"standard" enums:"standard,express"`
 }
 
+// Send godoc
+// @Summary Send SMS (async accept)
+// @Tags sms
+// @Accept json
+// @Produce json
+// @Security AccountToken
+// @Param Idempotency-Key header string false "Idempotency key for safe retries"
+// @Param body body sendSMSRequest true "SMS payload"
+// @Success 202 {object} map[string]string
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Failure 402 {object} map[string]interface{}
+// @Failure 409 {object} map[string]interface{}
+// @Failure 429 {object} map[string]interface{}
+// @Router /v1/sms/send [post]
 func (h *SMSHandler) Send(c *gin.Context) {
 	accountID, ok := middleware.AccountID(c)
 	if !ok {
@@ -93,6 +108,17 @@ func idempotencyKeyPtr(c *gin.Context) *string {
 	return &key
 }
 
+// List godoc
+// @Summary List SMS messages
+// @Tags sms
+// @Produce json
+// @Security AccountToken
+// @Param cursor query string false "Cursor for pagination"
+// @Param limit query int false "Page size (max 100)"
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Router /v1/sms [get]
 func (h *SMSHandler) List(c *gin.Context) {
 	accountID, ok := middleware.AccountID(c)
 	if !ok {
@@ -135,6 +161,17 @@ func (h *SMSHandler) List(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
+// Get godoc
+// @Summary Get SMS message by ID
+// @Tags sms
+// @Produce json
+// @Security AccountToken
+// @Param id path string true "Message ID"
+// @Success 200 {object} map[string]interface{}
+// @Failure 400 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Failure 404 {object} map[string]interface{}
+// @Router /v1/sms/{id} [get]
 func (h *SMSHandler) Get(c *gin.Context) {
 	accountID, ok := middleware.AccountID(c)
 	if !ok {

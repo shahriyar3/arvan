@@ -2,11 +2,15 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/shahriyar/arvan/internal/broker"
 	"github.com/shahriyar/arvan/internal/config"
 	"github.com/shahriyar/arvan/internal/observability"
@@ -24,6 +28,20 @@ func main() {
 	logger := observability.NewLogger(cfg.App.LogLevel)
 	slog.SetDefault(logger)
 	logger.Info("outbox relay starting")
+
+	ctx := context.Background()
+	if cfg.Telemetry.Enabled {
+		shutdownTracer, err := observability.InitTracer(ctx, cfg.App.Name+"-outbox-relay", cfg.Telemetry.OTLPEndpoint)
+		if err != nil {
+			logger.Error("failed to init tracer", "error", err)
+			os.Exit(1)
+		}
+		defer func() {
+			if err := observability.ShutdownGracefully(shutdownTracer, 5*time.Second); err != nil {
+				logger.Warn("tracer shutdown failed", "error", err)
+			}
+		}()
+	}
 
 	db, err := repository.NewDB(cfg.Database)
 	if err != nil {
@@ -45,10 +63,14 @@ func main() {
 	outboxRepo := repository.NewOutboxRepository(db)
 	relay := outbox.NewRelay(outboxRepo, rmq, cfg.OutboxRelay)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	runCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	relay.Start(ctx)
+	if cfg.OutboxRelay.MetricsPort > 0 {
+		go serveMetrics(cfg.OutboxRelay.MetricsPort)
+	}
+
+	relay.Start(runCtx)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
@@ -74,4 +96,14 @@ func main() {
 	}
 
 	logger.Info("outbox relay stopped")
+}
+
+func serveMetrics(port int) {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	addr := fmt.Sprintf(":%d", port)
+	slog.Info("outbox relay metrics server starting", "addr", addr)
+	if err := http.ListenAndServe(addr, mux); err != nil && err != http.ErrServerClosed {
+		slog.Error("outbox relay metrics server failed", "error", err)
+	}
 }

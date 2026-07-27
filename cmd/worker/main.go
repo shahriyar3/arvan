@@ -32,6 +32,20 @@ func main() {
 	slog.SetDefault(logger)
 	logger.Info("worker starting")
 
+	ctx := context.Background()
+	if cfg.Telemetry.Enabled {
+		shutdownTracer, err := observability.InitTracer(ctx, cfg.App.Name+"-worker", cfg.Telemetry.OTLPEndpoint)
+		if err != nil {
+			logger.Error("failed to init tracer", "error", err)
+			os.Exit(1)
+		}
+		defer func() {
+			if err := observability.ShutdownGracefully(shutdownTracer, 5*time.Second); err != nil {
+				logger.Warn("tracer shutdown failed", "error", err)
+			}
+		}()
+	}
+
 	db, err := repository.NewDB(cfg.Database)
 	if err != nil {
 		logger.Error("failed to connect database", "error", err)
@@ -60,14 +74,14 @@ func main() {
 	processor := worker.NewProcessor(db, smsRepo, processedRepo, cbClient, cfg.Worker)
 	processor.SetDLQPublisher(rmq)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	runCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	if cfg.Worker.MetricsPort > 0 {
 		go serveMetrics(cfg.Worker.MetricsPort)
 	}
 
-	go reportCircuitBreakerState(ctx, cbClient)
+	go reportCircuitBreakerState(runCtx, cbClient)
 
 	var wg sync.WaitGroup
 	queues := []string{broker.QueueExpress, broker.QueueStandard}
@@ -77,7 +91,7 @@ func main() {
 		go func() {
 			defer wg.Done()
 			logger.Info("worker consumer started", "queue", queue)
-			if err := processor.RunConsumer(ctx, rmq, queue); err != nil {
+			if err := processor.RunConsumer(runCtx, rmq, queue); err != nil {
 				logger.Error("worker consumer stopped", "queue", queue, "error", err)
 			}
 		}()

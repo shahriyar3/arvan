@@ -8,6 +8,7 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/shahriyar/arvan/internal/domain"
+	"github.com/shahriyar/arvan/internal/observability"
 )
 
 const (
@@ -100,6 +101,7 @@ func (r *RabbitMQ) Publish(ctx context.Context, queue string, body []byte) error
 			ContentType:  "application/json",
 			DeliveryMode: amqp.Persistent,
 			Body:         body,
+			Headers:      observability.InjectAMQP(ctx, amqp.Table{}),
 		},
 	)
 	if err != nil {

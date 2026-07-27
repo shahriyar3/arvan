@@ -10,7 +10,7 @@ Key patterns: fire-and-forget acceptance, transactional outbox, idempotent API a
 
 ## Architecture
 
-Phase 1 delivers the foundation: three Go binaries (`api`, `worker`, `outbox-relay`), PostgreSQL schema, Redis, and RabbitMQ via docker-compose. Phase 2 adds account identification, prepaid balance, and ledger audit trail. Phase 3 adds fire-and-forget send with transactional outbox and idempotent retries. Phase 4 wires the async pipeline: outbox relay, RabbitMQ, mock operator, and worker status updates. Phase 5 adds resilience: Redis rate limiting, express/standard bulkhead pools, circuit breaker, DLQ, HAProxy, and express SLA metrics. Observability endpoints expand in Phase 6.
+Phase 1 delivers the foundation: three Go binaries (`api`, `worker`, `outbox-relay`), PostgreSQL schema, Redis, and RabbitMQ via docker-compose. Phase 2 adds account identification, prepaid balance, and ledger audit trail. Phase 3 adds fire-and-forget send with transactional outbox and idempotent retries. Phase 4 wires the async pipeline: outbox relay, RabbitMQ, mock operator, and worker status updates. Phase 5 adds resilience: Redis rate limiting, express/standard bulkhead pools, circuit breaker, DLQ, HAProxy, and express SLA metrics. Phase 6 adds OpenTelemetry tracing (Jaeger), Prometheus metrics, structured logs with `trace_id`, and Swagger UI.
 
 ```mermaid
 flowchart LR
@@ -19,9 +19,12 @@ flowchart LR
     API --> PGPrimary[(PostgreSQL)]
     API --> PGReplica[(Read Replica)]
     API --> Redis
+    API -.-> Jaeger
     Relay --> PGPrimary
     Relay --> RMQ[RabbitMQ]
+    Relay -.-> Jaeger
     RMQ --> Worker --> MockOp[Mock Operator]
+    Worker -.-> Jaeger
 ```
 
 ## Key Design Decisions
@@ -178,6 +181,46 @@ curl http://localhost:9091/metrics | grep express_operator_delivery_seconds
 curl http://localhost:9091/metrics | grep circuit_breaker_state
 ```
 
+## Observability (Phase 6)
+
+| Layer | Implementation |
+|---|---|
+| Tracing | OpenTelemetry OTLP → Jaeger (`TELEMETRY_OTLP_ENDPOINT`, default `localhost:4318`) |
+| Metrics | Prometheus — API `GET /metrics`, worker `:9091/metrics`, outbox-relay `:9092/metrics` |
+| Logs | JSON `slog` with `trace_id` when a span is active |
+| API docs | `swag` → `api/openapi/`, UI at `/swagger/index.html` |
+
+**End-to-end trace:** HTTP handler (`otelgin`) → `sms.send` TX span → trace context stored in outbox payload → relay `outbox.publish` → RabbitMQ W3C headers → worker `worker.process` + `operator.send` (otel HTTP transport).
+
+**Prometheus metrics (API `/metrics`):**
+
+| Metric | Type | Description |
+|---|---|---|
+| `sms_accept_total` | counter | Send accepts by HTTP status |
+| `sms_accept_duration_seconds` | histogram | `POST /v1/sms/send` latency |
+| `balance_deduct_errors_total` | counter | Insufficient balance / deduct failures |
+| `outbox_pending_gauge` | gauge | Unpublished outbox rows (polled every 15s) |
+
+Worker (`:9091/metrics`) exposes `express_operator_delivery_seconds` and `circuit_breaker_state` (Phase 5). Outbox-relay (`:9092/metrics`) exposes `outbox_publish_errors_total` and shared registry metrics.
+
+Example:
+
+```bash
+# Jaeger UI (docker-compose)
+open http://localhost:16686
+
+# API metrics
+curl http://localhost:8080/metrics | grep sms_accept
+
+# Outbox-relay metrics
+curl http://localhost:9092/metrics | grep outbox_publish_errors_total
+
+# Regenerate OpenAPI after handler changes
+make swagger
+```
+
+**Config:** `TELEMETRY_ENABLED=true`, `TELEMETRY_OTLP_ENDPOINT=jaeger:4318` in compose; set `TELEMETRY_ENABLED=false` to disable export locally.
+
 ## Scale Considerations
 
 Target: ~1.2K msg/s average, 12–25K msg/s peak. API returns quickly; workers scale horizontally. HAProxy load-balances API replicas; rate limiting and bulkhead pools protect tenants and express SLA.
@@ -219,10 +262,13 @@ Infrastructure (docker-compose):
 | RabbitMQ   | 5672 (AMQP), 15672 (management UI) |
 | Mock Operator | 8090 |
 | Worker metrics | 9091 |
+| Jaeger UI | 16686 |
+| OTLP HTTP | 4318 |
 
 ## API Documentation
 
-Swagger UI will be available at `/swagger/index.html` after Phase 6.
+Swagger UI: `http://localhost:8080/swagger/index.html`  
+OpenAPI spec: `api/openapi/swagger.json` (regenerate with `make swagger`).
 
 ## Testing
 

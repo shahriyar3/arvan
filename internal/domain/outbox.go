@@ -24,9 +24,10 @@ type OutboxEventRecord struct {
 }
 
 type SMSSendPayload struct {
-	MessageID   string `json:"message_id"`
-	AccountID   string `json:"account_id"`
-	To          string `json:"to"`
-	Body        string `json:"body"`
-	MessageType string `json:"message_type"`
+	MessageID    string            `json:"message_id"`
+	AccountID    string            `json:"account_id"`
+	To           string            `json:"to"`
+	Body         string            `json:"body"`
+	MessageType  string            `json:"message_type"`
+	TraceContext map[string]string `json:"trace_context,omitempty"`
 }

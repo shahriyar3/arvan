@@ -12,6 +12,10 @@ import (
 	"github.com/shahriyar/arvan/internal/broker"
 	"github.com/shahriyar/arvan/internal/config"
 	"github.com/shahriyar/arvan/internal/domain"
+	"github.com/shahriyar/arvan/internal/observability"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Publisher interface {
@@ -56,7 +60,7 @@ func (r *Relay) loop(ctx context.Context) {
 
 	for {
 		if err := r.pollOnce(ctx); err != nil {
-			slog.Error("outbox relay poll failed", "error", err)
+			slog.ErrorContext(ctx, "outbox relay poll failed", "error", err)
 		}
 
 		select {
@@ -76,13 +80,13 @@ func (r *Relay) pollOnce(ctx context.Context) error {
 	}
 	for _, event := range events {
 		if err := r.publishEvent(ctx, event); err != nil {
-			slog.Error("publish outbox event failed",
+			slog.ErrorContext(ctx, "publish outbox event failed",
 				"event_id", event.ID,
 				"aggregate_id", event.AggregateID,
 				"error", err,
 			)
 			if recordErr := r.outbox.RecordPublishFailure(ctx, event.ID); recordErr != nil {
-				slog.Error("record outbox publish failure", "event_id", event.ID, "error", recordErr)
+				slog.ErrorContext(ctx, "record outbox publish failure", "event_id", event.ID, "error", recordErr)
 			}
 		}
 	}
@@ -95,12 +99,31 @@ func (r *Relay) publishEvent(ctx context.Context, event domain.OutboxEventRecord
 		return fmt.Errorf("unmarshal outbox payload: %w", err)
 	}
 
+	publishCtx := observability.ExtractMap(ctx, payload.TraceContext)
+	publishCtx, span := observability.StartSpan(publishCtx, "outbox.publish",
+		trace.WithAttributes(
+			attribute.String("event_id", event.ID.String()),
+			attribute.String("message_id", payload.MessageID),
+			attribute.String("queue", broker.QueueForMessageType(payload.MessageType)),
+		),
+	)
+	defer span.End()
+
 	queue := broker.QueueForMessageType(payload.MessageType)
-	if err := r.publisher.Publish(ctx, queue, event.Payload); err != nil {
+	if err := r.publisher.Publish(publishCtx, queue, event.Payload); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		observability.RecordOutboxPublishError()
 		return err
 	}
 
-	return r.outbox.MarkPublished(ctx, event.ID)
+	if err := r.outbox.MarkPublished(ctx, event.ID); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+
+	return nil
 }
 
 func (r *Relay) Stop() {

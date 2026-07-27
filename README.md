@@ -16,7 +16,7 @@ make run-api
 
 For full async delivery, also run `make run-mock-operator`, `make run-relay`, and `make run-worker` (see SUBMISSION_EN.md Phase 4).
 
-With docker-compose, HAProxy load-balances two API replicas on port **8080** (Phase 5). Worker metrics: `http://localhost:9091/metrics`.
+With docker-compose, HAProxy load-balances two API replicas on port **8080** (Phase 5). Metrics: API `http://localhost:8080/metrics`, worker `http://localhost:9091/metrics`. Jaeger UI: `http://localhost:16686`.
 
 PostgreSQL listens on port **5433** (host) to avoid conflicts with other local databases.
 
@@ -55,7 +55,9 @@ curl -X POST http://localhost:8080/v1/sms/send \
 
 **Common errors:** `401` invalid/missing token (run `make seed`, use `demo-token-account-a` not a placeholder); `402` insufficient balance (top up first).
 
-- Swagger UI: `http://localhost:8080/swagger/index.html` (Phase 6)
+- Swagger UI: `http://localhost:8080/swagger/index.html`
+- Prometheus: `http://localhost:8080/metrics`
+- Jaeger: `http://localhost:16686`
 - Health: `http://localhost:8080/health/ready`
 
 ## Tests

@@ -1,0 +1,295 @@
+basePath: /
+definitions:
+  internal_handler.sendSMSRequest:
+    properties:
+      body:
+        example: Hello
+        type: string
+      message_type:
+        enum:
+        - standard
+        - express
+        example: standard
+        type: string
+      to:
+        example: "+989121234567"
+        type: string
+    required:
+    - body
+    - message_type
+    - to
+    type: object
+  internal_handler.topupRequest:
+    properties:
+      amount:
+        example: 1000
+        type: integer
+    required:
+    - amount
+    type: object
+host: localhost:8080
+info:
+  contact: {}
+  description: Prepaid SMS Gateway REST API for ArvanCloud challenge.
+  title: SMS Gateway API
+  version: "1.0"
+paths:
+  /health/live:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Liveness probe
+      tags:
+      - health
+  /health/ready:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Readiness probe
+      tags:
+      - health
+  /v1/account/balance:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: integer
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - AccountToken: []
+      summary: Get current balance
+      tags:
+      - account
+  /v1/account/ledger:
+    get:
+      parameters:
+      - description: Cursor for pagination
+        in: query
+        name: cursor
+        type: string
+      - description: Page size (max 100)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - AccountToken: []
+      summary: List ledger entries
+      tags:
+      - account
+  /v1/account/topup:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Topup amount
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handler.topupRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: integer
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - AccountToken: []
+      summary: Top up prepaid balance
+      tags:
+      - account
+  /v1/sms:
+    get:
+      parameters:
+      - description: Cursor for pagination
+        in: query
+        name: cursor
+        type: string
+      - description: Page size (max 100)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - AccountToken: []
+      summary: List SMS messages
+      tags:
+      - sms
+  /v1/sms/{id}:
+    get:
+      parameters:
+      - description: Message ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - AccountToken: []
+      summary: Get SMS message by ID
+      tags:
+      - sms
+  /v1/sms/send:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Idempotency key for safe retries
+        in: header
+        name: Idempotency-Key
+        type: string
+      - description: SMS payload
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handler.sendSMSRequest'
+      produces:
+      - application/json
+      responses:
+        "202":
+          description: Accepted
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "402":
+          description: Payment Required
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties: true
+            type: object
+        "429":
+          description: Too Many Requests
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - AccountToken: []
+      summary: Send SMS (async accept)
+      tags:
+      - sms
+securityDefinitions:
+  AccountToken:
+    in: header
+    name: X-Account-Token
+    type: apiKey
+swagger: "2.0"
