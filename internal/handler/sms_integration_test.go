@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -19,6 +20,59 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestSMSHandlerSendValidationIntegration(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := repository.NewIntegrationDB(t)
+	accountRepo := repository.NewAccountRepository(db)
+	ledgerRepo := repository.NewLedgerRepository(db)
+	smsRepo := repository.NewSMSRepository(db)
+	outboxRepo := repository.NewOutboxRepository(db)
+	idempotencyRepo := repository.NewIdempotencyRepository(db)
+	accountSvc := service.NewAccountService(accountRepo, ledgerRepo)
+	smsSvc := service.NewSMSService(accountRepo, ledgerRepo, smsRepo, outboxRepo, idempotencyRepo)
+	ctx := context.Background()
+
+	account, err := accountRepo.UpsertByTokenHash(ctx, "handler-validation-integration")
+	require.NoError(t, err)
+	_, err = accountSvc.Topup(ctx, account.ID, 10)
+	require.NoError(t, err)
+
+	router := gin.New()
+	v1 := router.Group("/v1")
+	v1.Use(func(c *gin.Context) {
+		c.Set(middleware.AccountIDKey, account.ID)
+		c.Next()
+	})
+	NewSMSHandler(smsSvc).Register(v1, middleware.Idempotency(idempotencyRepo))
+
+	send := func(body map[string]string) int {
+		payload, err := json.Marshal(body)
+		require.NoError(t, err)
+		req := httptest.NewRequest(http.MethodPost, "/v1/sms/send", bytes.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	t.Run("rejects gsm7 over 160 chars", func(t *testing.T) {
+		assert.Equal(t, http.StatusBadRequest, send(map[string]string{
+			"to":           "+989121234567",
+			"body":         strings.Repeat("a", domain.GSM7MaxLength+1),
+			"message_type": "standard",
+		}))
+	})
+
+	t.Run("rejects ucs2 over 70 chars", func(t *testing.T) {
+		assert.Equal(t, http.StatusBadRequest, send(map[string]string{
+			"to":           "+989121234567",
+			"body":         strings.Repeat("س", domain.UCS2MaxLength+1),
+			"message_type": "standard",
+		}))
+	})
+}
 
 func TestSMSHandlerSendIdempotencyIntegration(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -83,4 +137,42 @@ func TestSMSHandlerSendIdempotencyIntegration(t *testing.T) {
 	var smsCount int64
 	require.NoError(t, db.Table("sms_messages").Where("account_id = ?", account.ID).Count(&smsCount).Error)
 	assert.Equal(t, int64(1), smsCount)
+}
+
+func TestSMSHandlerSendInsufficientBalanceIntegration(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := repository.NewIntegrationDB(t)
+	accountRepo := repository.NewAccountRepository(db)
+	ledgerRepo := repository.NewLedgerRepository(db)
+	smsRepo := repository.NewSMSRepository(db)
+	outboxRepo := repository.NewOutboxRepository(db)
+	idempotencyRepo := repository.NewIdempotencyRepository(db)
+	smsSvc := service.NewSMSService(accountRepo, ledgerRepo, smsRepo, outboxRepo, idempotencyRepo)
+	ctx := context.Background()
+
+	account, err := accountRepo.UpsertByTokenHash(ctx, "handler-402-integration")
+	require.NoError(t, err)
+
+	router := gin.New()
+	v1 := router.Group("/v1")
+	v1.Use(func(c *gin.Context) {
+		c.Set(middleware.AccountIDKey, account.ID)
+		c.Next()
+	})
+	NewSMSHandler(smsSvc).Register(v1, middleware.Idempotency(idempotencyRepo))
+
+	body, err := json.Marshal(map[string]string{
+		"to":           "+989121234567",
+		"body":         "Hello",
+		"message_type": "standard",
+	})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sms/send", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusPaymentRequired, rec.Code)
 }

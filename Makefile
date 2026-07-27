@@ -1,13 +1,19 @@
-.PHONY: help build run-api run-worker run-relay run-mock-operator run-seed test test-race test-integration lint check migrate-up migrate-down seed tidy swagger
+.PHONY: help build run-api run-worker run-relay run-mock-operator run-seed test test-race test-integration lint check migrate-up migrate-down seed demo load-test load-test-stress tidy swagger
 
 GO ?= go
 MIGRATE ?= $(shell command -v migrate 2>/dev/null || echo $(HOME)/go/bin/migrate)
 MIGRATE_DATABASE_URL ?= postgres://sms:sms@localhost:5433/sms_gateway?sslmode=disable
 TEST_DATABASE_URL ?= postgres://sms:sms@localhost:5433/sms_gateway_test?sslmode=disable
 SWAG ?= $(shell command -v swag 2>/dev/null || echo $(HOME)/go/bin/swag)
+K6 ?= k6
+LOAD_BASE_URL ?= http://localhost:8080
+LOAD_TOKEN ?= demo-token-account-a
+LOAD_TARGET_RPS ?= 80
+LOAD_STRESS_RPS ?= 1000
+LOAD_DURATION ?= 30s
 
 help:
-	@echo "Targets: build, run-api, seed, test, test-integration, check, migrate-up, migrate-down, swagger"
+	@echo "Targets: build, run-api, seed, demo, load-test, load-test-stress, test, test-integration, check, migrate-up, migrate-down, swagger"
 
 build:
 	$(GO) build -o bin/api ./cmd/api
@@ -30,6 +36,25 @@ run-mock-operator:
 
 seed:
 	$(GO) run ./cmd/seed
+
+demo:
+	./scripts/demo.sh
+
+load-test:
+	@echo "Load test at $(LOAD_TARGET_RPS) RPS (default rate limit: 100 req/s per account)"
+	$(K6) run scripts/load/k6-send.js \
+		-e BASE_URL=$(LOAD_BASE_URL) \
+		-e TOKEN=$(LOAD_TOKEN) \
+		-e TARGET_RPS=$(LOAD_TARGET_RPS) \
+		-e DURATION=$(LOAD_DURATION)
+
+load-test-stress:
+	@echo "Stress test at $(LOAD_STRESS_RPS) RPS — raise RATE_LIMIT_LIMIT first (e.g. 2000) or set RATE_LIMIT_ENABLED=false"
+	$(K6) run scripts/load/k6-send.js \
+		-e BASE_URL=$(LOAD_BASE_URL) \
+		-e TOKEN=$(LOAD_TOKEN) \
+		-e TARGET_RPS=$(LOAD_STRESS_RPS) \
+		-e DURATION=$(LOAD_DURATION)
 
 test:
 	$(GO) test ./...

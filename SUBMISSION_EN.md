@@ -273,9 +273,53 @@ OpenAPI spec: `api/openapi/swagger.json` (regenerate with `make swagger`).
 ## Testing
 
 ```bash
-make check    # lint + unit tests + race detector
+make check    # lint + unit tests + race detector + integration tests
 make test
+make test-integration   # PostgreSQL integration (requires docker compose postgres)
 ```
+
+| Layer | Coverage |
+|---|---|
+| Unit | domain validation (E.164, GSM-7/UCS-2), idempotency, rate limiter, circuit breaker |
+| Integration | balance TX, send + outbox, idempotency concurrency, 100-goroutine spend limit |
+| API | handler status codes (402, 409), cursor pagination, multi-tenant isolation |
+| Concurrency | `-race` on 100 parallel sends with balance=100 → balance=0, no overdraft |
+| Load | k6 script — default 80 RPS (fits rate limit); stress target 1K RPS with raised limit |
+
+**P0 acceptance tests (automated):**
+
+- balance=3, cost=1 → 3 sends OK, 4th → 402, balance=0
+- 100 concurrent sends on balance=100 → balance=0, no negative balance
+- Idempotency: same key → same response, one deduct
+- Account A cannot read account B messages
+- EN body >160 chars and FA body >70 chars rejected
+
+Load test (requires running stack + `make seed`):
+
+```bash
+make load-test
+# default 80 RPS — under RATE_LIMIT_LIMIT=100 per account
+
+# ~1K RPS stress (raise RATE_LIMIT_LIMIT or set RATE_LIMIT_ENABLED=false first):
+make load-test-stress
+```
+
+Default rate limit is **100 req/s per account** (Redis sliding window). `make load-test` uses 80 RPS so the run passes without tuning. For the design-target ~1K RPS accept load test, increase `RATE_LIMIT_LIMIT` (e.g. 2000) or disable rate limiting, restart API replicas, then run `make load-test-stress`.
+
+## Demo Script
+
+For reviewers — end-to-end curl walkthrough:
+
+```bash
+docker compose up -d
+make migrate-up && make seed
+./scripts/demo.sh
+# or: make demo
+```
+
+The script checks readiness, balance, topup, send (202), async delivery (`status=sent`), idempotency, list/get reports, and multi-tenant isolation (404 cross-account).
+
+Demo tokens are seeded with **10,000** prepaid units each (`demo-token-account-a`, `demo-token-account-b`).
 
 ## Trade-offs
 

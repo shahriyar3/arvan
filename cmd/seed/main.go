@@ -28,6 +28,8 @@ func main() {
 	}
 
 	accountRepo := repository.NewAccountRepository(db)
+	ledgerRepo := repository.NewLedgerRepository(db)
+	accountSvc := seed.NewAccountService(accountRepo, ledgerRepo)
 	ctx := context.Background()
 
 	for _, account := range seed.Accounts {
@@ -37,6 +39,17 @@ func main() {
 			logger.Error("failed to seed account", "name", account.Name, "error", err)
 			os.Exit(1)
 		}
+
+		if account.InitialBalance > 0 {
+			balance, err := accountSvc.EnsureBalance(ctx, created.ID, account.InitialBalance)
+			if err != nil {
+				logger.Error("failed to seed balance", "name", account.Name, "error", err)
+				os.Exit(1)
+			}
+			logger.Info("seeded account", "name", account.Name, "account_id", created.ID.String(), "balance", balance)
+			continue
+		}
+
 		logger.Info("seeded account", "name", account.Name, "account_id", created.ID.String())
 	}
 

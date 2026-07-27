@@ -91,6 +91,10 @@ func TestSMSServiceSendIdempotencyConcurrency(t *testing.T) {
 		Where("account_id = ? AND reason = ?", account.ID, domain.LedgerReasonSend).
 		Count(&sendLedgerCount).Error)
 	assert.Equal(t, int64(1), sendLedgerCount)
+
+	var outboxCount int64
+	require.NoError(t, db.Table("outbox_events").Where("aggregate_id = ?", firstMessageID).Count(&outboxCount).Error)
+	assert.Equal(t, int64(1), outboxCount)
 }
 
 func TestSMSServiceSendConcurrency(t *testing.T) {
@@ -141,12 +145,54 @@ func TestSMSServiceSendConcurrency(t *testing.T) {
 		Count(&sendLedgerCount).Error)
 	assert.Equal(t, int64(workers), sendLedgerCount)
 
+	var messageIDs []uuid.UUID
+	require.NoError(t, db.Table("sms_messages").Where("account_id = ?", account.ID).Pluck("id", &messageIDs).Error)
+	require.Len(t, messageIDs, workers)
+
+	var outboxCount int64
+	require.NoError(t, db.Table("outbox_events").Where("aggregate_id IN ?", messageIDs).Count(&outboxCount).Error)
+	assert.Equal(t, int64(workers), outboxCount)
+
 	_, err = svc.Send(ctx, account.ID, domain.SendSMSInput{
 		To:          "+989121234567",
 		Body:        "One more",
 		MessageType: domain.MessageTypeStandard,
 	})
 	assert.ErrorIs(t, err, domainerrors.ErrInsufficientBalance)
+}
+
+func TestSMSServiceAccountIsolationIntegration(t *testing.T) {
+	db := repository.NewIntegrationDB(t)
+	accountRepo := repository.NewAccountRepository(db)
+	ledgerRepo := repository.NewLedgerRepository(db)
+	smsRepo := repository.NewSMSRepository(db)
+	outboxRepo := repository.NewOutboxRepository(db)
+	idempotencyRepo := repository.NewIdempotencyRepository(db)
+	svc := NewSMSService(accountRepo, ledgerRepo, smsRepo, outboxRepo, idempotencyRepo)
+	ctx := context.Background()
+
+	accountA, err := accountRepo.UpsertByTokenHash(ctx, "sms-isolation-a-hash")
+	require.NoError(t, err)
+	accountB, err := accountRepo.UpsertByTokenHash(ctx, "sms-isolation-b-hash")
+	require.NoError(t, err)
+
+	accountSvc := NewAccountService(accountRepo, ledgerRepo)
+	_, err = accountSvc.Topup(ctx, accountA.ID, 5)
+	require.NoError(t, err)
+
+	result, err := svc.Send(ctx, accountA.ID, domain.SendSMSInput{
+		To:          "+989121234567",
+		Body:        "Private message",
+		MessageType: domain.MessageTypeStandard,
+	})
+	require.NoError(t, err)
+
+	_, err = svc.Get(ctx, accountB.ID, result.MessageID)
+	assert.ErrorIs(t, err, domainerrors.ErrNotFound)
+
+	messages, err := svc.List(ctx, accountB.ID, 10, nil)
+	require.NoError(t, err)
+	assert.Empty(t, messages)
 }
 
 func TestSMSServiceSendExactSpendLimit(t *testing.T) {
@@ -193,4 +239,37 @@ func TestSMSServiceSendExactSpendLimit(t *testing.T) {
 	var smsCount int64
 	require.NoError(t, db.Table("sms_messages").Where("account_id = ?", account.ID).Count(&smsCount).Error)
 	assert.Equal(t, int64(3), smsCount)
+}
+
+func TestSMSServiceSendOutboxIntegration(t *testing.T) {
+	db := repository.NewIntegrationDB(t)
+	accountRepo := repository.NewAccountRepository(db)
+	ledgerRepo := repository.NewLedgerRepository(db)
+	smsRepo := repository.NewSMSRepository(db)
+	outboxRepo := repository.NewOutboxRepository(db)
+	idempotencyRepo := repository.NewIdempotencyRepository(db)
+	svc := NewSMSService(accountRepo, ledgerRepo, smsRepo, outboxRepo, idempotencyRepo)
+	ctx := context.Background()
+
+	account, err := accountRepo.UpsertByTokenHash(ctx, "sms-outbox-integration-hash")
+	require.NoError(t, err)
+
+	accountSvc := NewAccountService(accountRepo, ledgerRepo)
+	_, err = accountSvc.Topup(ctx, account.ID, 1)
+	require.NoError(t, err)
+
+	result, err := svc.Send(ctx, account.ID, domain.SendSMSInput{
+		To:          "+989121234567",
+		Body:        "Hello",
+		MessageType: domain.MessageTypeStandard,
+	})
+	require.NoError(t, err)
+
+	var outbox struct {
+		EventType string
+		Status    string
+	}
+	require.NoError(t, db.Table("outbox_events").Where("aggregate_id = ?", result.MessageID).First(&outbox).Error)
+	assert.Equal(t, domain.OutboxEventTypeSMSSendRequested, outbox.EventType)
+	assert.Equal(t, domain.OutboxStatusPending, outbox.Status)
 }

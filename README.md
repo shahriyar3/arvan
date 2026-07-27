@@ -4,28 +4,39 @@ REST API for sending SMS with prepaid balance, async delivery, and delivery repo
 
 **Architecture & design:** see [SUBMISSION_EN.md](SUBMISSION_EN.md)
 
-## Quick Start
+## Quick Start (full stack)
 
 ```bash
 cp .env.example .env
 docker compose up -d
 make migrate-up
 make seed
-make run-api
 ```
 
-For full async delivery, also run `make run-mock-operator`, `make run-relay`, and `make run-worker` (see SUBMISSION_EN.md Phase 4).
+The compose stack includes HAProxy (API `:8080`), two API replicas, outbox-relay, worker, mock operator, PostgreSQL, Redis, RabbitMQ, and Jaeger.
 
-With docker-compose, HAProxy load-balances two API replicas on port **8080** (Phase 5). Metrics: API `http://localhost:8080/metrics`, worker `http://localhost:9091/metrics`. Jaeger UI: `http://localhost:16686`.
+Verify:
 
-PostgreSQL listens on port **5433** (host) to avoid conflicts with other local databases.
+```bash
+curl http://localhost:8080/health/ready
+./scripts/demo.sh
+```
 
-## API
+## Demo
 
-All `/v1/*` routes require header `X-Account-Token`. Demo tokens (after `make seed`):
+```bash
+make demo
+# BASE_URL=http://localhost:8080 TOKEN_A=demo-token-account-a ./scripts/demo.sh
+```
+
+After `make seed`, demo accounts have **10,000** prepaid units:
 
 - `demo-token-account-a`
 - `demo-token-account-b`
+
+## API
+
+All `/v1/*` routes require header `X-Account-Token`.
 
 Example:
 
@@ -38,7 +49,6 @@ curl -X POST http://localhost:8080/v1/account/topup \
 curl http://localhost:8080/v1/account/balance \
   -H "X-Account-Token: demo-token-account-a"
 
-# Send SMS (costs 1 unit — top up first if balance is 0)
 curl -X POST http://localhost:8080/v1/sms/send \
   -H "X-Account-Token: demo-token-account-a" \
   -H "Content-Type: application/json" \
@@ -53,16 +63,49 @@ curl -X POST http://localhost:8080/v1/sms/send \
   -d '{"to":"+989121234567","body":"Hello","message_type":"standard"}'
 ```
 
-**Common errors:** `401` invalid/missing token (run `make seed`, use `demo-token-account-a` not a placeholder); `402` insufficient balance (top up first).
+**Common errors:** `401` invalid/missing token; `402` insufficient balance; `429` rate limit exceeded.
 
-- Swagger UI: `http://localhost:8080/swagger/index.html`
-- Prometheus: `http://localhost:8080/metrics`
-- Jaeger: `http://localhost:16686`
-- Health: `http://localhost:8080/health/ready`
+## Observability
+
+| Service | URL |
+|---|---|
+| Swagger UI | http://localhost:8080/swagger/index.html |
+| Prometheus (API) | http://localhost:8080/metrics |
+| Worker metrics | http://localhost:9091/metrics |
+| Jaeger UI | http://localhost:16686 |
+| Health | http://localhost:8080/health/ready |
+
+PostgreSQL listens on port **5433** (host) to avoid conflicts with other local databases.
 
 ## Tests
 
 ```bash
-make check
-make test
+make check              # lint + unit + race + integration
+make test-integration   # PostgreSQL integration only
 ```
+
+## Load Test
+
+Requires [k6](https://k6.io/) and a running stack (`make seed` for balance):
+
+```bash
+make load-test
+# default: 80 RPS — fits RATE_LIMIT_LIMIT=100 (one account)
+make load-test LOAD_TARGET_RPS=50 LOAD_DURATION=15s
+```
+
+Default rate limit is **100 req/s per account** (Redis). `make load-test` uses 80 RPS so requests stay under the limit.
+
+For ~1K RPS stress test, raise the limit first, then:
+
+```bash
+# Option A: bump limit in .env and restart API replicas
+# RATE_LIMIT_LIMIT=2000
+make load-test-stress
+
+# Option B: disable rate limiting for the load-test run
+# RATE_LIMIT_ENABLED=false
+make load-test-stress
+```
+
+Script: `scripts/load/k6-send.js` — asserts p99 accept latency < 500ms and error rate < 1%.
