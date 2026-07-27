@@ -1,0 +1,14 @@
+.local/
+.cursor/
+.claude/
+.cursorrules
+AGENTS.md
+PLAN.md
+.git/
+bin/
+.env
+.env.*
+!.env.example
+*.md
+!README.md
+!SUBMISSION_EN.md

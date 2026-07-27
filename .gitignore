@@ -1,0 +1,20 @@
+# Local AI / dev workspace
+.local/
+.cursor/
+.claude/
+.cursorrules
+AGENTS.md
+PLAN.md
+
+# Docs: only README + SUBMISSION_EN in Git
+*.md
+!README.md
+!SUBMISSION_EN.md
+
+# Standard Go/env
+.env
+.env.*
+!.env.example
+bin/
+vendor/
+.DS_Store
