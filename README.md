@@ -13,7 +13,7 @@ make migrate-up
 make seed
 ```
 
-The compose stack includes HAProxy (API `:8080`), two API replicas, outbox-relay, worker, mock operator, PostgreSQL, Redis, RabbitMQ, and Jaeger.
+The compose stack includes HAProxy (API `:8080`), two API replicas, outbox-relay, worker, mock operator, PostgreSQL primary + read replica, Redis, RabbitMQ, Jaeger, Prometheus, and Grafana.
 
 Verify:
 
@@ -69,13 +69,20 @@ curl -X POST http://localhost:8080/v1/sms/send \
 
 | Service | URL |
 |---|---|
+| Grafana dashboard | http://localhost:3000 (admin / admin) |
+| Prometheus UI | http://localhost:9090 |
 | Swagger UI | http://localhost:8080/swagger/index.html |
 | Prometheus (API) | http://localhost:8080/metrics |
 | Worker metrics | http://localhost:9091/metrics |
+| Outbox-relay metrics | http://localhost:9092/metrics |
 | Jaeger UI | http://localhost:16686 |
-| Health | http://localhost:8080/health/ready |
+| Health (primary + replica ping) | http://localhost:8080/health/ready |
 
-PostgreSQL listens on port **5433** (host) to avoid conflicts with other local databases.
+Grafana loads a custom **SMS Gateway** dashboard from `deploy/grafana/dashboards/sms-gateway.json` (API accept rate/latency, outbox backlog, express SLA, circuit breaker). Prometheus scrapes all three metric endpoints every 15s.
+
+PostgreSQL primary listens on port **5433** and the read replica on **5434** (host) to avoid conflicts with other local databases. API read queries (SMS list/get, ledger) use the replica via GORM dbresolver; writes and balance reads use the primary.
+
+**Docker build fails with `DNS: transient error`?** That is a temporary network/DNS issue reaching Alpine package mirrors. Retry `docker compose up -d --build`. The Dockerfile retries `apk add` automatically; if it still fails, check Docker Desktop DNS settings or your VPN/proxy.
 
 ## Tests
 

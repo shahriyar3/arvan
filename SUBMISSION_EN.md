@@ -32,7 +32,7 @@ flowchart LR
 - **Modular monolith** with separate binaries for API, worker, and outbox relay — simpler ops for a 7-day challenge while keeping clear scaling boundaries.
 - **Transactional outbox** ensures balance deduction and message enqueue are atomic (implemented in Phase 3).
 - **Pre-seeded `X-Account-Token`** instead of a full auth system, per challenge requirements. Tokens are stored as SHA-256 hashes; middleware resolves `account_id` on every `/v1/*` request.
-- **CQRS-lite read/write split** via GORM dbresolver: mutations hit primary; ledger and SMS list/get reads use replica (falls back to primary in local dev). **Balance reads use primary** so clients see sends/topups immediately without replica lag.
+- **CQRS-lite read/write split** via GORM dbresolver: mutations hit primary; ledger and SMS list/get reads use the streaming read replica. **Balance reads use primary** so clients see sends/topups immediately without replica lag.
 
 ## Account & Balance (Phase 2)
 
@@ -61,12 +61,13 @@ Topup is exposed for demo/reviewer convenience; in production it would be restri
 | `/v1/sms` | GET | Read (replica) | Cursor-paginated message list |
 | `/v1/sms/{id}` | GET | Read (replica) | Single message status |
 
-**Send transaction (same TX, lock order: account → idempotency → deduct):**
+**Send transaction (same TX, lock order: idempotency → account → deduct):**
 
 ```sql
 BEGIN;
+-- idempotency: claim key or return cached snapshot (if Idempotency-Key present)
+INSERT INTO idempotency_keys ...;  -- ON CONFLICT → return existing snapshot or 409 in-flight
 SELECT balance FROM accounts WHERE id = $1 FOR UPDATE;
--- idempotency: claim key or return cached snapshot
 UPDATE accounts SET balance = balance - cost WHERE id = $1;
 INSERT INTO account_ledger (delta, reason='send', ref_id=message_id);
 INSERT INTO sms_messages (status='accepted', ...);
@@ -187,6 +188,7 @@ curl http://localhost:9091/metrics | grep circuit_breaker_state
 |---|---|
 | Tracing | OpenTelemetry OTLP → Jaeger (`TELEMETRY_OTLP_ENDPOINT`, default `localhost:4318`) |
 | Metrics | Prometheus — API `GET /metrics`, worker `:9091/metrics`, outbox-relay `:9092/metrics` |
+| Dashboards | Custom Grafana dashboard (`deploy/grafana/dashboards/sms-gateway.json`) — provisioned via docker-compose |
 | Logs | JSON `slog` with `trace_id` when a span is active |
 | API docs | `swag` → `api/openapi/`, UI at `/swagger/index.html` |
 
@@ -206,6 +208,12 @@ Worker (`:9091/metrics`) exposes `express_operator_delivery_seconds` and `circui
 Example:
 
 ```bash
+# Grafana dashboard (admin / admin)
+open http://localhost:3000/d/sms-gateway/sms-gateway
+
+# Prometheus targets
+open http://localhost:9090/targets
+
 # Jaeger UI (docker-compose)
 open http://localhost:16686
 
@@ -218,6 +226,18 @@ curl http://localhost:9092/metrics | grep outbox_publish_errors_total
 # Regenerate OpenAPI after handler changes
 make swagger
 ```
+
+**Grafana dashboard panels (custom, not imported):**
+
+| Panel | Metric / query |
+|---|---|
+| SMS accept rate | `sum(rate(sms_accept_total[5m]))` |
+| Accept latency p50/p95/p99 | `histogram_quantile` on `sms_accept_duration_seconds` |
+| Balance deduct errors | `rate(balance_deduct_errors_total[5m])` |
+| Outbox backlog | `outbox_pending_gauge` |
+| Outbox publish errors | `rate(outbox_publish_errors_total[5m])` |
+| Express delivery SLA | `histogram_quantile` on `express_operator_delivery_seconds` |
+| Circuit breaker state | `circuit_breaker_state` (0=closed, 1=half-open, 2=open) |
 
 **Config:** `TELEMETRY_ENABLED=true`, `TELEMETRY_OTLP_ENDPOINT=jaeger:4318` in compose; set `TELEMETRY_ENABLED=false` to disable export locally.
 
@@ -250,18 +270,22 @@ curl http://localhost:8080/v1/account/balance \
 Health checks:
 
 - Liveness: `GET http://localhost:8080/health/live`
-- Readiness: `GET http://localhost:8080/health/ready` (includes DB ping)
+- Readiness: `GET http://localhost:8080/health/ready` (pings PostgreSQL primary and read replica via GORM dbresolver)
 
 Infrastructure (docker-compose):
 
 | Service   | Port  |
 |-----------|-------|
 | HAProxy (API) | 8080 |
-| PostgreSQL | 5433 |
+| PostgreSQL primary | 5433 |
+| PostgreSQL read replica | 5434 |
 | Redis      | 6379 |
 | RabbitMQ   | 5672 (AMQP), 15672 (management UI) |
 | Mock Operator | 8090 |
 | Worker metrics | 9091 |
+| Outbox-relay metrics | 9092 |
+| Prometheus UI | 9090 |
+| Grafana UI | 3000 (admin / admin) |
 | Jaeger UI | 16686 |
 | OTLP HTTP | 4318 |
 
@@ -323,6 +347,7 @@ Demo tokens are seeded with **10,000** prepaid units each (`demo-token-account-a
 
 ## Trade-offs
 
-- **Single-node PostgreSQL/Redis** in local dev; HAProxy load-balances two API replicas (Phase 5). When `DATABASE_REPLICA_DSN` is empty, reads use primary.
+- **PostgreSQL streaming replication** in docker-compose (`postgres-primary` + `postgres-replica`); API sets `DATABASE_REPLICA_DSN` so GORM dbresolver routes SMS list/get and ledger reads to the replica. When `DATABASE_REPLICA_DSN` is empty, reads fall back to primary (bare local dev).
+- **Single-node Redis** in compose (rate limit + idempotency cache); HAProxy load-balances two API replicas (Phase 5).
 - **Topup endpoint open** for demo — no separate admin auth system per challenge scope.
 - **Local docs** (`.local/`) stay out of Git; only this file and `README.md` are submitted as documentation.

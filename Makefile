@@ -66,8 +66,8 @@ test-race:
 	$(GO) test -race ./...
 
 test-integration-setup:
-	@docker compose exec -T postgres psql -U sms -d postgres -tc "SELECT 1 FROM pg_database WHERE datname = 'sms_gateway_test'" | grep -q 1 || \
-		docker compose exec -T postgres psql -U sms -d postgres -c "CREATE DATABASE sms_gateway_test"
+	@docker compose exec -T postgres-primary psql -U sms -d postgres -tc "SELECT 1 FROM pg_database WHERE datname = 'sms_gateway_test'" | grep -q 1 || \
+		docker compose exec -T postgres-primary psql -U sms -d postgres -c "CREATE DATABASE sms_gateway_test"
 	$(MIGRATE) -path migrations -database "$(TEST_DATABASE_URL)" up
 
 test-integration: test-integration-setup

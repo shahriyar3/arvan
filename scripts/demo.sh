@@ -102,6 +102,8 @@ fi
 echo "isolation OK: account B got 404"
 
 bold "Demo completed successfully"
-echo "Swagger UI: $BASE_URL/swagger/index.html"
-echo "Metrics:    $BASE_URL/metrics"
-echo "Jaeger UI:  http://localhost:16686"
+echo "Swagger UI:  $BASE_URL/swagger/index.html"
+echo "Metrics:     $BASE_URL/metrics"
+echo "Grafana:     http://localhost:3000/d/sms-gateway/sms-gateway (admin / admin)"
+echo "Prometheus:  http://localhost:9090/targets"
+echo "Jaeger UI:   http://localhost:16686"

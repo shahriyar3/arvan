@@ -9,6 +9,7 @@
 // @securityDefinitions.apikey AccountToken
 // @in header
 // @name X-Account-Token
+// @description Demo token after `make seed`: demo-token-account-a
 package main
 
 import (
@@ -22,8 +23,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	swaggerFiles "github.com/swaggo/files"
-	ginSwagger "github.com/swaggo/gin-swagger"
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 
@@ -33,10 +32,11 @@ import (
 	"github.com/shahriyar/arvan/internal/idempotency"
 	"github.com/shahriyar/arvan/internal/middleware"
 	"github.com/shahriyar/arvan/internal/observability"
-	appredis "github.com/shahriyar/arvan/internal/redis"
 	"github.com/shahriyar/arvan/internal/ratelimit"
+	appredis "github.com/shahriyar/arvan/internal/redis"
 	"github.com/shahriyar/arvan/internal/repository"
 	"github.com/shahriyar/arvan/internal/service"
+	"github.com/shahriyar/arvan/internal/swaggerui"
 )
 
 func main() {
@@ -116,7 +116,7 @@ func main() {
 
 	handler.NewHealthHandler(db).Register(router)
 	handler.RegisterMetrics(router)
-	router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+	swaggerui.Register(router)
 
 	v1 := router.Group("/v1")
 	v1.Use(middleware.AccountToken(accountRepo))

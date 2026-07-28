@@ -12,6 +12,14 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+func TestInitTracerNoSchemaConflict(t *testing.T) {
+	ctx := context.Background()
+	shutdown, err := InitTracer(ctx, "test-service", "localhost:4318")
+	require.NoError(t, err)
+	require.NotNil(t, shutdown)
+	require.NoError(t, shutdown(ctx))
+}
+
 func TestTraceContextRoundTripMap(t *testing.T) {
 	tp := sdktrace.NewTracerProvider()
 	otel.SetTracerProvider(tp)

@@ -35,10 +35,8 @@ func InitTracer(ctx context.Context, serviceName, otlpEndpoint string) (func(con
 		return nil, fmt.Errorf("create otlp exporter: %w", err)
 	}
 
-	res, err := resource.Merge(
-		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
+	res, err := resource.New(ctx,
+		resource.WithAttributes(
 			semconv.ServiceName(serviceName),
 		),
 	)

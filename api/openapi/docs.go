@@ -450,6 +450,7 @@ const docTemplate = `{
     },
     "securityDefinitions": {
         "AccountToken": {
+            "description": "Demo token after ` + "`" + `make seed` + "`" + `: demo-token-account-a",
             "type": "apiKey",
             "name": "X-Account-Token",
             "in": "header"

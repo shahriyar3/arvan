@@ -1,10 +1,13 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
+	"gorm.io/plugin/dbresolver"
 )
 
 type HealthHandler struct {
@@ -43,16 +46,21 @@ func (h *HealthHandler) Ready(c *gin.Context) {
 		return
 	}
 
-	sqlDB, err := h.db.DB()
-	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "database unavailable"})
+	ctx := c.Request.Context()
+	if err := pingDB(ctx, h.db, dbresolver.Write); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "database primary unavailable"})
 		return
 	}
 
-	if err := sqlDB.PingContext(c.Request.Context()); err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "database unavailable"})
+	if err := pingDB(ctx, h.db, dbresolver.Read); err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "database replica unavailable"})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "ready"})
+}
+
+func pingDB(ctx context.Context, db *gorm.DB, resolver clause.Expression) error {
+	var one int
+	return db.Clauses(resolver).WithContext(ctx).Raw("SELECT 1").Scan(&one).Error
 }
