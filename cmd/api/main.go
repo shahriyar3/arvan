@@ -10,6 +10,8 @@
 // @in header
 // @name X-Account-Token
 // @description Demo token after `make seed`: demo-token-account-a
+//
+// @security AccountToken
 package main
 
 import (

@@ -26,7 +26,9 @@ func TestSwaggerInitializerPreauthorizesDemoToken(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	body := rec.Body.String()
 	assert.Contains(t, body, "persistAuthorization: true")
-	assert.Contains(t, body, `preauthorizeApiKey("AccountToken", "`+seed.AccountAToken+`")`)
+	assert.Contains(t, body, `defaultAccountToken = "`+seed.AccountAToken+`"`)
+	assert.Contains(t, body, `preauthorizeApiKey("AccountToken", defaultAccountToken)`)
+	assert.Contains(t, body, `req.headers["X-Account-Token"] = defaultAccountToken`)
 }
 
 func TestSwaggerIndexServed(t *testing.T) {

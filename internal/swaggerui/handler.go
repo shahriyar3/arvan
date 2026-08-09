@@ -175,6 +175,8 @@ body {
 
 const initializerJSTpl = `
 window.onload = function() {
+  const defaultAccountToken = "{{.DefaultAccountToken}}"
+
   const ui = SwaggerUIBundle({
     url: "{{.URL}}",
     dom_id: '#swagger-ui',
@@ -191,10 +193,16 @@ window.onload = function() {
     layout: "StandaloneLayout",
     docExpansion: "{{.DocExpansion}}",
     deepLinking: {{.DeepLinking}},
-    defaultModelsExpandDepth: {{.DefaultModelsExpandDepth}}
+    defaultModelsExpandDepth: {{.DefaultModelsExpandDepth}},
+    requestInterceptor: function(req) {
+      if (!req.headers["X-Account-Token"]) {
+        req.headers["X-Account-Token"] = defaultAccountToken
+      }
+      return req
+    }
   })
 
-  ui.preauthorizeApiKey("` + securitySchemeName + `", "{{.DefaultAccountToken}}")
+  ui.preauthorizeApiKey("` + securitySchemeName + `", defaultAccountToken)
 
   window.ui = ui
 }
