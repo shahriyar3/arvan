@@ -10,7 +10,7 @@ Key patterns: fire-and-forget acceptance, transactional outbox, idempotent API a
 
 ## Architecture
 
-Phase 1 delivers the foundation: three Go binaries (`api`, `worker`, `outbox-relay`), PostgreSQL schema, Redis, and RabbitMQ via docker-compose. Phase 2 adds account identification, prepaid balance, and ledger audit trail. Phase 3 adds fire-and-forget send with transactional outbox and idempotent retries. Phase 4 wires the async pipeline: outbox relay, RabbitMQ, mock operator, and worker status updates. Phase 5 adds resilience: Redis rate limiting, express/standard bulkhead pools, circuit breaker, DLQ, HAProxy, and express SLA metrics. Phase 6 adds OpenTelemetry tracing (Jaeger), Prometheus metrics, structured logs with `trace_id`, and Swagger UI.
+The system comprises three Go binaries (`api`, `worker`, `outbox-relay`), PostgreSQL, Redis, and RabbitMQ via docker-compose. Account identification, prepaid balance, and ledger audit trail support multi-tenant usage. Send requests use fire-and-forget acceptance with a transactional outbox and idempotent retries. Delivery runs asynchronously through an outbox relay, RabbitMQ, a mock operator, and worker status updates. Resilience includes Redis rate limiting, express/standard bulkhead pools, circuit breaker, DLQ, HAProxy, and express SLA metrics. Observability covers OpenTelemetry tracing (Jaeger), Prometheus metrics, structured logs with `trace_id`, and Swagger UI.
 
 ```mermaid
 flowchart LR
@@ -29,12 +29,12 @@ flowchart LR
 
 ## Key Design Decisions
 
-- **Modular monolith** with separate binaries for API, worker, and outbox relay — simpler ops for a 7-day challenge while keeping clear scaling boundaries.
-- **Transactional outbox** ensures balance deduction and message enqueue are atomic (implemented in Phase 3).
+- **Modular monolith** with separate binaries for API, worker, and outbox relay — clear scaling boundaries without full microservice overhead.
+- **Transactional outbox** ensures balance deduction and message enqueue are atomic.
 - **Pre-seeded `X-Account-Token`** instead of a full auth system, per challenge requirements. Tokens are stored as SHA-256 hashes; middleware resolves `account_id` on every `/v1/*` request.
 - **CQRS-lite read/write split** via GORM dbresolver: mutations hit primary; ledger and SMS list/get reads use the streaming read replica. **Balance reads use primary** so clients see sends/topups immediately without replica lag.
 
-## Account & Balance (Phase 2)
+## Account & Balance
 
 | Endpoint | Method | DB | Description |
 |---|---|---|---|
@@ -53,7 +53,7 @@ flowchart LR
 
 Topup is exposed for demo/reviewer convenience; in production it would be restricted by network ACL or admin credentials.
 
-## Send SMS + Outbox (Phase 3)
+## Send SMS + Outbox
 
 | Endpoint | Method | DB | Description |
 |---|---|---|---|
@@ -78,9 +78,9 @@ COMMIT;
 
 **Validation:** E.164 phone (`+989...`), single-page body (GSM-7 ≤160 chars, UCS-2 ≤70 for Persian/Unicode), `message_type` = `standard` | `express`. Cost = 1 unit per message (same price for EN/FA).
 
-**Idempotency:** optional header `Idempotency-Key: <UUID>`. Unique `(account_id, idempotency_key)`. Middleware fast-path checks **Redis cache** (24h TTL, optional) then PostgreSQL; returns stored `202` response. Duplicate in-flight requests get `409 Conflict` instead of a second deduct. Worker dedup via `processed_consumer_events` (Phase 4).
+**Idempotency:** optional header `Idempotency-Key: <UUID>`. Unique `(account_id, idempotency_key)`. Middleware fast-path checks **Redis cache** (24h TTL, optional) then PostgreSQL; returns stored `202` response. Duplicate in-flight requests get `409 Conflict` instead of a second deduct. Worker dedup via `processed_consumer_events`.
 
-**Outbox:** relay publishes pending rows to RabbitMQ with publisher confirms; worker completes delivery (Phase 4). No RabbitMQ publish before TX commit.
+**Outbox:** relay publishes pending rows to RabbitMQ with publisher confirms; worker completes delivery. No RabbitMQ publish before TX commit.
 
 Example:
 
@@ -100,9 +100,9 @@ curl -X POST http://localhost:8080/v1/sms/send \
 
 **Errors:** `402` insufficient balance, `409` idempotency in progress (retry later), `400` validation (phone, body length, message type).
 
-## Async Pipeline (Phase 4)
+## Async Pipeline
 
-After Phase 3 commits a send, delivery continues asynchronously:
+After the send transaction commits, delivery continues asynchronously:
 
 ```text
 API TX (deduct + sms_messages + outbox pending)
@@ -146,7 +146,7 @@ curl http://localhost:8080/v1/sms/{message_id} \
   -H "X-Account-Token: demo-token-account-a"
 ```
 
-## Resilience & Scale (Phase 5)
+## Resilience & Scale
 
 | Component | Behavior |
 |---|---|
@@ -182,7 +182,7 @@ curl http://localhost:9091/metrics | grep express_operator_delivery_seconds
 curl http://localhost:9091/metrics | grep circuit_breaker_state
 ```
 
-## Observability (Phase 6)
+## Observability
 
 | Layer | Implementation |
 |---|---|
@@ -203,7 +203,7 @@ curl http://localhost:9091/metrics | grep circuit_breaker_state
 | `balance_deduct_errors_total` | counter | Insufficient balance / deduct failures |
 | `outbox_pending_gauge` | gauge | Unpublished outbox rows (polled every 15s) |
 
-Worker (`:9091/metrics`) exposes `express_operator_delivery_seconds` and `circuit_breaker_state` (Phase 5). Outbox-relay (`:9092/metrics`) exposes `outbox_publish_errors_total` and shared registry metrics.
+Worker (`:9091/metrics`) exposes `express_operator_delivery_seconds` and `circuit_breaker_state`. Outbox-relay (`:9092/metrics`) exposes `outbox_publish_errors_total` and shared registry metrics.
 
 Example:
 
@@ -310,7 +310,7 @@ make test-integration   # PostgreSQL integration (requires docker compose postgr
 | Concurrency | `-race` on 100 parallel sends with balance=100 → balance=0, no overdraft |
 | Load | k6 script — default 80 RPS (fits rate limit); stress target 1K RPS with raised limit |
 
-**P0 acceptance tests (automated):**
+**Acceptance tests (automated):**
 
 - balance=3, cost=1 → 3 sends OK, 4th → 402, balance=0
 - 100 concurrent sends on balance=100 → balance=0, no negative balance
@@ -347,7 +347,6 @@ Demo tokens are seeded with **10,000** prepaid units each (`demo-token-account-a
 
 ## Trade-offs
 
-- **PostgreSQL streaming replication** in docker-compose (`postgres-primary` + `postgres-replica`); API sets `DATABASE_REPLICA_DSN` so GORM dbresolver routes SMS list/get and ledger reads to the replica. When `DATABASE_REPLICA_DSN` is empty, reads fall back to primary (bare local dev).
-- **Single-node Redis** in compose (rate limit + idempotency cache); HAProxy load-balances two API replicas (Phase 5).
-- **Topup endpoint open** for demo — no separate admin auth system per challenge scope.
-- **Local docs** (`.local/`) stay out of Git; only this file and `README.md` are submitted as documentation.
+- **PostgreSQL streaming replication** in docker-compose (`postgres-primary` + `postgres-replica`); API sets `DATABASE_REPLICA_DSN` so GORM dbresolver routes SMS list/get and ledger reads to the replica. When `DATABASE_REPLICA_DSN` is empty, reads fall back to primary.
+- **Single-node Redis** in compose (rate limit + idempotency cache); HAProxy load-balances two API replicas.
+- **Topup endpoint open** for demo — no separate admin auth system.
